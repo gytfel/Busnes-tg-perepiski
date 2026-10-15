@@ -66,6 +66,11 @@ class Database:
     async def init(self) -> None:
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
+        # Unicode-регистронезависимость: встроенные LOWER/NOCASE в SQLite
+        # сворачивают только ASCII, поэтому регистрируем Python-функцию.
+        await self._db.create_function(
+            "pylower", 1, lambda s: s.lower() if s else s, deterministic=True
+        )
         await self._db.executescript(SCHEMA)
         await self._db.commit()
 
@@ -163,16 +168,8 @@ class Database:
             )
             await self._db.commit()
 
-    async def get_message(self, chat_id: int, message_id: int) -> StoredMessage | None:
-        assert self._db is not None
-        async with self._lock:
-            cur = await self._db.execute(
-                "SELECT * FROM messages WHERE chat_id = ? AND message_id = ?",
-                (chat_id, message_id),
-            )
-            row = await cur.fetchone()
-        if row is None:
-            return None
+    @staticmethod
+    def _row_to_message(row: aiosqlite.Row) -> StoredMessage:
         return StoredMessage(
             connection_id=row["connection_id"],
             chat_id=row["chat_id"],
@@ -186,6 +183,56 @@ class Database:
             file_id=row["file_id"],
             date=row["date"],
         )
+
+    async def get_message(self, chat_id: int, message_id: int) -> StoredMessage | None:
+        assert self._db is not None
+        async with self._lock:
+            cur = await self._db.execute(
+                "SELECT * FROM messages WHERE chat_id = ? AND message_id = ?",
+                (chat_id, message_id),
+            )
+            row = await cur.fetchone()
+        return self._row_to_message(row) if row is not None else None
+
+    async def search_messages(
+        self, owner_id: int, query: str, limit: int = 20
+    ) -> list[StoredMessage]:
+        """Поиск по тексту сохранённых сообщений (регистронезависимо)."""
+        assert self._db is not None
+        pattern = f"%{query}%"
+        async with self._lock:
+            cur = await self._db.execute(
+                """
+                SELECT * FROM messages
+                WHERE connection_id IN (
+                    SELECT connection_id FROM connections WHERE owner_id = ?
+                )
+                  AND text IS NOT NULL
+                  AND pylower(text) LIKE pylower(?)
+                ORDER BY date DESC
+                LIMIT ?
+                """,
+                (owner_id, pattern, limit),
+            )
+            rows = await cur.fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    async def all_messages(self, owner_id: int) -> list[StoredMessage]:
+        """Все сохранённые сообщения владельца для экспорта (по чату, затем по времени)."""
+        assert self._db is not None
+        async with self._lock:
+            cur = await self._db.execute(
+                """
+                SELECT * FROM messages
+                WHERE connection_id IN (
+                    SELECT connection_id FROM connections WHERE owner_id = ?
+                )
+                ORDER BY chat_title, date
+                """,
+                (owner_id,),
+            )
+            rows = await cur.fetchall()
+        return [self._row_to_message(r) for r in rows]
 
     async def count_messages(self, owner_id: int) -> int:
         assert self._db is not None

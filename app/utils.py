@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import html
 import logging
+from collections.abc import Iterable
+from datetime import datetime, timezone
 
 from aiogram import Bot
 from aiogram.types import Message, User
@@ -97,3 +99,63 @@ async def deliver(
                 return
 
     await bot.send_message(chat_id, body[:TEXT_LIMIT] or "(пустое сообщение)")
+
+
+def _fmt_ts(ts: int) -> str:
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return "—"
+
+
+def build_export_html(messages: Iterable) -> str:
+    """Собирает HTML-файл с сохранённой перепиской, сгруппированной по чатам.
+
+    Ожидает объекты StoredMessage (или совместимые) с полями chat_title,
+    from_name, outgoing, date, text, media_type.
+    """
+    rows = list(messages)
+    generated = datetime.now(tz=timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+
+    parts: list[str] = [
+        "<!doctype html><html lang='ru'><head><meta charset='utf-8'>",
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+        "<title>Экспорт переписки</title>",
+        "<style>",
+        "body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;",
+        "background:#0e1621;color:#e6edf3;padding:16px;}",
+        "h1{font-size:20px;} h2{font-size:16px;margin:24px 0 8px;color:#6ab7ff;",
+        "border-bottom:1px solid #22303c;padding-bottom:4px;}",
+        ".msg{padding:8px 12px;margin:6px 0;border-radius:10px;background:#17212b;}",
+        ".msg.out{background:#2b5278;}",
+        ".meta{font-size:12px;color:#8a98a5;margin-bottom:4px;}",
+        ".media{font-size:12px;color:#f0b232;}",
+        ".empty{color:#8a98a5;font-style:italic;}",
+        "</style></head><body>",
+        f"<h1>Экспорт переписки</h1><p class='meta'>Сформировано: {generated}. "
+        f"Сообщений: {len(rows)}.</p>",
+    ]
+
+    current_chat: str | None = None
+    if not rows:
+        parts.append("<p class='empty'>Нет сохранённых сообщений.</p>")
+
+    for m in rows:
+        chat_title = m.chat_title or "—"
+        if chat_title != current_chat:
+            current_chat = chat_title
+            parts.append(f"<h2>💬 {esc(chat_title)}</h2>")
+        cls = "msg out" if m.outgoing else "msg"
+        who = "Вы" if m.outgoing else (m.from_name or "собеседник")
+        parts.append(f"<div class='{cls}'>")
+        parts.append(f"<div class='meta'>{esc(who)} · {_fmt_ts(m.date)}</div>")
+        if m.text:
+            parts.append(esc(m.text).replace("\n", "<br>"))
+        if m.media_type:
+            parts.append(f"<div class='media'>[вложение: {esc(m.media_type)}]</div>")
+        if not m.text and not m.media_type:
+            parts.append("<span class='empty'>(пустое сообщение)</span>")
+        parts.append("</div>")
+
+    parts.append("</body></html>")
+    return "".join(parts)

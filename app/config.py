@@ -18,6 +18,9 @@ class Config:
     db_path: str
     # Уведомлять ли владельца о сообщениях, которые он удалил сам.
     notify_own_deletions: bool
+    # Необязательный ID канала/группы-«архива», куда дублировать удалённые
+    # и изменённые сообщения. Бот должен быть участником/админом этого чата.
+    archive_chat_id: int | None
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -38,9 +41,13 @@ def load_config() -> Config:
     owner_raw = os.getenv("OWNER_ID", "").strip()
     owner_id = int(owner_raw) if owner_raw else None
 
+    archive_raw = os.getenv("ARCHIVE_CHAT_ID", "").strip()
+    archive_chat_id = int(archive_raw) if archive_raw else None
+
     return Config(
         bot_token=token,
         owner_id=owner_id,
         db_path=os.getenv("DB_PATH", "messages.db").strip() or "messages.db",
         notify_own_deletions=_get_bool("NOTIFY_OWN_DELETIONS", True),
+        archive_chat_id=archive_chat_id,
     )

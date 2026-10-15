@@ -23,6 +23,14 @@ def _resolve_can_reply(conn: BusinessConnection) -> bool:
     return bool(getattr(conn, "can_reply", False))
 
 
+def _targets(owner_id: int, config: Config) -> list[int]:
+    """Куда слать уведомления: владельцу и, если задан, в архивный канал."""
+    targets = [owner_id]
+    if config.archive_chat_id and config.archive_chat_id != owner_id:
+        targets.append(config.archive_chat_id)
+    return targets
+
+
 def _fmt_date(ts: int) -> str:
     try:
         return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC")
@@ -106,7 +114,7 @@ async def on_business_message(message: Message, db: Database) -> None:
 
 @router.edited_business_message()
 async def on_edited_business_message(
-    message: Message, bot: Bot, db: Database
+    message: Message, bot: Bot, db: Database, config: Config
 ) -> None:
     """Сообщение изменено — показываем владельцу старую и новую версии."""
     old = await db.get_message(message.chat.id, message.message_id)
@@ -134,10 +142,11 @@ async def on_edited_business_message(
     body += "\n\n<b>Было:</b>\n" + (esc(old_text) if old_text else "<i>нет сохранённой копии</i>")
     body += "\n\n<b>Стало:</b>\n" + (esc(new_text) if new_text else "<i>(без текста)</i>")
 
-    try:
-        await bot.send_message(owner.owner_id, body[:4096])
-    except Exception as exc:
-        logger.warning("Не удалось отправить уведомление об изменении: %s", exc)
+    for chat_id in _targets(owner.owner_id, config):
+        try:
+            await bot.send_message(chat_id, body[:4096])
+        except Exception as exc:
+            logger.warning("Не удалось отправить уведомление об изменении: %s", exc)
 
 
 @router.deleted_business_messages()
@@ -150,6 +159,8 @@ async def on_deleted_business_messages(
         logger.info("Удаление в неизвестном подключении %s", event.business_connection_id)
         return
 
+    targets = _targets(owner.owner_id, config)
+
     for message_id in event.message_ids:
         stored = await db.get_message(event.chat.id, message_id)
 
@@ -159,10 +170,11 @@ async def on_deleted_business_messages(
                 f"💬 Чат: {esc(event.chat.full_name or str(event.chat.id))}\n"
                 "<i>Нет сохранённой копии (сообщение пришло до запуска бота).</i>"
             )
-            try:
-                await bot.send_message(owner.owner_id, header)
-            except Exception as exc:
-                logger.warning("Ошибка уведомления об удалении: %s", exc)
+            for chat_id in targets:
+                try:
+                    await bot.send_message(chat_id, header)
+                except Exception as exc:
+                    logger.warning("Ошибка уведомления об удалении: %s", exc)
             continue
 
         # Пропустить удаления, сделанные самим владельцем, если так настроено.
@@ -175,14 +187,15 @@ async def on_deleted_business_messages(
             f"💬 Чат: {esc(stored.chat_title)}\n"
             f"🕒 {_fmt_date(stored.date)}"
         )
-        try:
-            await deliver(
-                bot=bot,
-                chat_id=owner.owner_id,
-                header=header,
-                text=stored.text,
-                media_type=stored.media_type,
-                file_id=stored.file_id,
-            )
-        except Exception as exc:
-            logger.warning("Ошибка доставки удалённого сообщения: %s", exc)
+        for chat_id in targets:
+            try:
+                await deliver(
+                    bot=bot,
+                    chat_id=chat_id,
+                    header=header,
+                    text=stored.text,
+                    media_type=stored.media_type,
+                    file_id=stored.file_id,
+                )
+            except Exception as exc:
+                logger.warning("Ошибка доставки удалённого сообщения: %s", exc)
