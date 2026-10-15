@@ -1,0 +1,58 @@
+"""Точка входа: запуск бота в режиме long polling."""
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+
+from app.config import load_config
+from app.database import Database
+from app.handlers import business, commands
+
+logger = logging.getLogger(__name__)
+
+
+async def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+    config = load_config()
+
+    db = Database(config.db_path)
+    await db.init()
+
+    bot = Bot(
+        token=config.bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+
+    # db и config доступны в хендлерах как аргументы через внедрение зависимостей.
+    dp = Dispatcher(db=db, config=config)
+    dp.include_router(commands.router)
+    dp.include_router(business.router)
+
+    # Явно подписываемся на бизнес-апдейты (их нужно перечислить в allowed_updates).
+    allowed_updates = dp.resolve_used_update_types()
+    logger.info("Запуск polling. allowed_updates=%s", allowed_updates)
+
+    me = await bot.get_me()
+    logger.info("Бот @%s запущен (id=%s)", me.username, me.id)
+
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+        await dp.start_polling(bot, allowed_updates=allowed_updates)
+    finally:
+        await bot.session.close()
+        await db.close()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Остановлено.")

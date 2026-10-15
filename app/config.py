@@ -1,0 +1,46 @@
+"""Конфигурация бота. Значения берутся из переменных окружения (.env)."""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+@dataclass(slots=True)
+class Config:
+    bot_token: str
+    # Необязательный явный ID владельца. Если не задан — владельцем считается
+    # пользователь, который подключил бота к своему Telegram Business аккаунту.
+    owner_id: int | None
+    db_path: str
+    # Уведомлять ли владельца о сообщениях, которые он удалил сам.
+    notify_own_deletions: bool
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on", "да"}
+
+
+def load_config() -> Config:
+    token = os.getenv("BOT_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError(
+            "BOT_TOKEN не задан. Создайте бота у @BotFather и укажите токен в .env "
+            "(смотрите .env.example)."
+        )
+
+    owner_raw = os.getenv("OWNER_ID", "").strip()
+    owner_id = int(owner_raw) if owner_raw else None
+
+    return Config(
+        bot_token=token,
+        owner_id=owner_id,
+        db_path=os.getenv("DB_PATH", "messages.db").strip() or "messages.db",
+        notify_own_deletions=_get_bool("NOTIFY_OWN_DELETIONS", True),
+    )

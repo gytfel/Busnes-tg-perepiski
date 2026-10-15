@@ -1,0 +1,22 @@
+# Секреты и данные
+.env
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# ОС / редакторы
+.DS_Store
+.idea/
+.vscode/
