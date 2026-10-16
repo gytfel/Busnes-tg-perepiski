@@ -35,8 +35,10 @@ HELP_TEXT = (
     "ℹ️ <b>Справка</b>\n\n"
     "📊 <b>Статус</b> — активные подключения и число сохранённых сообщений\n"
     "🔍 <b>Поиск</b> — найти сообщение по тексту (нажмите и введите слово)\n"
-    "📦 <b>Экспорт</b> — выгрузить всю переписку в HTML-файл\n\n"
-    "Те же действия есть и командами: /status, /search, /export.\n\n"
+    "📦 <b>Экспорт</b> — выгрузить всю переписку в HTML-файл\n"
+    "🧹 <b>Экспорт и очистка</b> — выгрузить файл и затем <b>стереть</b> "
+    "сохранённое с сервера (только после успешной отправки файла)\n\n"
+    "Те же действия есть и командами: /status, /search, /export, /export_clear.\n\n"
     "⚠️ Бот работает только с аккаунтом, который сам его подключил, и обрабатывает "
     "вашу собственную переписку. Соблюдайте законы вашей страны о записи переписки."
 )
@@ -53,6 +55,15 @@ def _fmt_ts(ts: int) -> str:
         return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m.%Y %H:%M")
     except Exception:
         return "—"
+
+
+def _human_size(num: int) -> str:
+    size = float(num)
+    for unit in ("Б", "КБ", "МБ", "ГБ"):
+        if size < 1024 or unit == "ГБ":
+            return f"{size:.0f} {unit}" if unit == "Б" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} ГБ"
 
 
 # --- Общие действия (вызываются и кнопкой, и командой) ---------------------
@@ -110,11 +121,12 @@ async def _do_search(message: Message, db: Database, query: str) -> None:
 
 
 async def _do_export(
-    message: Message, db: Database, bot: Bot, config: Config
+    message: Message, db: Database, bot: Bot, config: Config, purge: bool = False
 ) -> None:
     if message.from_user is None:
         return
-    messages = await db.all_messages(message.from_user.id)
+    uid = message.from_user.id
+    messages = await db.all_messages(uid)
     if not messages:
         await message.answer(
             "Пока нечего экспортировать — сохранённых сообщений нет.",
@@ -140,13 +152,25 @@ async def _do_export(
     if stats.notes:
         caption += "\n\n⚠️ " + " ".join(stats.notes)
 
+    # Отправляем файл. Очистку делаем ТОЛЬКО после успешной доставки —
+    # иначе данные пропали бы, не дойдя до владельца.
     try:
         await message.answer_document(document, caption=caption[:1024])
     except Exception as exc:
         await message.answer(
             "❌ Не удалось отправить экспорт (вероятно, файл больше 50 МБ). "
-            "Уменьшите EXPORT_MEDIA_MB в .env или экспортируйте меньше переписки.\n"
-            f"<code>{esc(str(exc))[:200]}</code>",
+            "Данные НЕ удалены. Уменьшите EXPORT_MEDIA_MB в .env или экспортируйте "
+            f"меньше переписки.\n<code>{esc(str(exc))[:200]}</code>",
+            reply_markup=kb.main_menu(),
+        )
+        return
+
+    if purge or config.purge_after_export:
+        count, freed = await db.purge_messages(uid)
+        await message.answer(
+            f"🧹 База очищена: удалено {count} сообщений, "
+            f"освобождено ~{_human_size(freed)}.\n"
+            "Новые сообщения продолжат сохраняться как обычно.",
             reply_markup=kb.main_menu(),
         )
 
@@ -171,6 +195,13 @@ async def cmd_status(message: Message, db: Database) -> None:
 @router.message(Command("export"))
 async def cmd_export(message: Message, db: Database, bot: Bot, config: Config) -> None:
     await _do_export(message, db, bot, config)
+
+
+@router.message(Command("export_clear"))
+async def cmd_export_clear(
+    message: Message, db: Database, bot: Bot, config: Config
+) -> None:
+    await _do_export(message, db, bot, config, purge=True)
 
 
 @router.message(Command("search"))
@@ -200,6 +231,14 @@ async def btn_export(
 ) -> None:
     await state.clear()
     await _do_export(message, db, bot, config)
+
+
+@router.message(F.text == kb.BTN_EXPORT_CLEAR)
+async def btn_export_clear(
+    message: Message, db: Database, state: FSMContext, bot: Bot, config: Config
+) -> None:
+    await state.clear()
+    await _do_export(message, db, bot, config, purge=True)
 
 
 @router.message(F.text == kb.BTN_HELP)

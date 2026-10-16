@@ -7,6 +7,7 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 BTN_STATUS = "📊 Статус"
 BTN_SEARCH = "🔍 Поиск"
 BTN_EXPORT = "📦 Экспорт"
+BTN_EXPORT_CLEAR = "🧹 Экспорт и очистка"
 BTN_HELP = "ℹ️ Помощь"
 BTN_CANCEL = "❌ Отмена"
 
@@ -16,7 +17,8 @@ def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_STATUS), KeyboardButton(text=BTN_SEARCH)],
-            [KeyboardButton(text=BTN_EXPORT), KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=BTN_EXPORT), KeyboardButton(text=BTN_EXPORT_CLEAR)],
+            [KeyboardButton(text=BTN_HELP)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие…",

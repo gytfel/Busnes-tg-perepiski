@@ -24,6 +24,8 @@ class Config:
     # Сколько МБ медиа максимум встраивать в один HTML-экспорт (под лимит
     # отправки Telegram ≤50 МБ и память сервера).
     export_media_mb: int
+    # Автоматически очищать базу после каждого обычного экспорта.
+    purge_after_export: bool
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -62,4 +64,5 @@ def load_config() -> Config:
         notify_own_deletions=_get_bool("NOTIFY_OWN_DELETIONS", True),
         archive_chat_id=archive_chat_id,
         export_media_mb=export_media_mb,
+        purge_after_export=_get_bool("PURGE_AFTER_EXPORT", False),
     )

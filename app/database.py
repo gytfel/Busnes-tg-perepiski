@@ -1,6 +1,7 @@
 """Хранилище сообщений и бизнес-подключений на SQLite (aiosqlite)."""
 from __future__ import annotations
 
+import os
 import time
 from asyncio import Lock
 from dataclasses import dataclass
@@ -233,6 +234,53 @@ class Database:
             )
             rows = await cur.fetchall()
         return [self._row_to_message(r) for r in rows]
+
+    async def purge_messages(self, owner_id: int) -> tuple[int, int]:
+        """Удаляет все сохранённые сообщения владельца и сжимает БД (VACUUM).
+
+        Подключения не трогаются — бот продолжает работать.
+        Возвращает (сколько удалено, сколько байт освобождено на диске).
+        """
+        assert self._db is not None
+
+        def _size() -> int:
+            try:
+                return os.path.getsize(self.path)
+            except OSError:
+                return 0
+
+        async with self._lock:
+            cur = await self._db.execute(
+                """
+                SELECT COUNT(*) AS c FROM messages
+                WHERE connection_id IN (
+                    SELECT connection_id FROM connections WHERE owner_id = ?
+                )
+                """,
+                (owner_id,),
+            )
+            row = await cur.fetchone()
+            count = int(row["c"]) if row else 0
+
+            await self._db.execute(
+                """
+                DELETE FROM messages
+                WHERE connection_id IN (
+                    SELECT connection_id FROM connections WHERE owner_id = ?
+                )
+                """,
+                (owner_id,),
+            )
+            await self._db.commit()
+
+            size_before = _size()
+            # VACUUM нельзя внутри транзакции — после commit() она закрыта.
+            await self._db.execute("VACUUM")
+            await self._db.commit()
+            size_after = _size()
+
+        freed = max(0, size_before - size_after)
+        return count, freed
 
     async def count_messages(self, owner_id: int) -> int:
         assert self._db is not None
