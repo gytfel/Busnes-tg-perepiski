@@ -8,15 +8,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, Message
 
 from app import keyboards as kb
+from app.config import Config
 from app.database import Database
-from app.utils import build_export_html, esc
+from app.export import build_export
+from app.utils import esc
 
 router = Router(name="commands")
 
@@ -107,7 +109,9 @@ async def _do_search(message: Message, db: Database, query: str) -> None:
     await message.answer("\n".join(lines)[:4096], reply_markup=kb.main_menu())
 
 
-async def _do_export(message: Message, db: Database) -> None:
+async def _do_export(
+    message: Message, db: Database, bot: Bot, config: Config
+) -> None:
     if message.from_user is None:
         return
     messages = await db.all_messages(message.from_user.id)
@@ -118,16 +122,33 @@ async def _do_export(message: Message, db: Database) -> None:
         )
         return
 
-    html_doc = build_export_html(messages)
+    await message.answer(
+        "⏳ Готовлю экспорт и скачиваю медиа — это может занять время…"
+    )
+
+    budget = config.export_media_mb * 1024 * 1024
+    html_doc, stats = await build_export(bot, messages, budget)
     stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M")
     document = BufferedInputFile(
         html_doc.encode("utf-8"), filename=f"perepiska_{stamp}.html"
     )
-    await message.answer_document(
-        document,
-        caption=f"📦 Экспорт переписки: {len(messages)} сообщений. "
-        "Откройте файл в браузере.",
+
+    caption = (
+        f"📦 Экспорт: {len(messages)} сообщений, встроено медиа: {stats.embedded}.\n"
+        "Откройте файл в браузере — фото/видео/голосовые играются прямо в нём."
     )
+    if stats.notes:
+        caption += "\n\n⚠️ " + " ".join(stats.notes)
+
+    try:
+        await message.answer_document(document, caption=caption[:1024])
+    except Exception as exc:
+        await message.answer(
+            "❌ Не удалось отправить экспорт (вероятно, файл больше 50 МБ). "
+            "Уменьшите EXPORT_MEDIA_MB в .env или экспортируйте меньше переписки.\n"
+            f"<code>{esc(str(exc))[:200]}</code>",
+            reply_markup=kb.main_menu(),
+        )
 
 
 # --- Слэш-команды ----------------------------------------------------------
@@ -148,8 +169,8 @@ async def cmd_status(message: Message, db: Database) -> None:
 
 
 @router.message(Command("export"))
-async def cmd_export(message: Message, db: Database) -> None:
-    await _do_export(message, db)
+async def cmd_export(message: Message, db: Database, bot: Bot, config: Config) -> None:
+    await _do_export(message, db, bot, config)
 
 
 @router.message(Command("search"))
@@ -174,9 +195,11 @@ async def btn_status(message: Message, db: Database, state: FSMContext) -> None:
 
 
 @router.message(F.text == kb.BTN_EXPORT)
-async def btn_export(message: Message, db: Database, state: FSMContext) -> None:
+async def btn_export(
+    message: Message, db: Database, state: FSMContext, bot: Bot, config: Config
+) -> None:
     await state.clear()
-    await _do_export(message, db)
+    await _do_export(message, db, bot, config)
 
 
 @router.message(F.text == kb.BTN_HELP)

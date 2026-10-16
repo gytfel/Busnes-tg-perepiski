@@ -21,6 +21,9 @@ class Config:
     # Необязательный ID канала/группы-«архива», куда дублировать удалённые
     # и изменённые сообщения. Бот должен быть участником/админом этого чата.
     archive_chat_id: int | None
+    # Сколько МБ медиа максимум встраивать в один HTML-экспорт (под лимит
+    # отправки Telegram ≤50 МБ и память сервера).
+    export_media_mb: int
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -44,10 +47,19 @@ def load_config() -> Config:
     archive_raw = os.getenv("ARCHIVE_CHAT_ID", "").strip()
     archive_chat_id = int(archive_raw) if archive_raw else None
 
+    try:
+        export_media_mb = int(os.getenv("EXPORT_MEDIA_MB", "25").strip() or "25")
+    except ValueError:
+        export_media_mb = 25
+    # Потолок 35 МБ «сырых» медиа: base64 раздувает их на ~33% (≈47 МБ),
+    # что всё ещё влезает в лимит отправки файла ботом (50 МБ).
+    export_media_mb = max(0, min(export_media_mb, 35))
+
     return Config(
         bot_token=token,
         owner_id=owner_id,
         db_path=os.getenv("DB_PATH", "messages.db").strip() or "messages.db",
         notify_own_deletions=_get_bool("NOTIFY_OWN_DELETIONS", True),
         archive_chat_id=archive_chat_id,
+        export_media_mb=export_media_mb,
     )
