@@ -7,6 +7,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.config import load_config
 from app.database import Database
@@ -32,7 +33,8 @@ async def main() -> None:
     )
 
     # db и config доступны в хендлерах как аргументы через внедрение зависимостей.
-    dp = Dispatcher(db=db, config=config)
+    # MemoryStorage — для FSM (состояние ввода поискового запроса).
+    dp = Dispatcher(storage=MemoryStorage(), db=db, config=config)
     dp.include_router(commands.router)
     dp.include_router(business.router)
 
