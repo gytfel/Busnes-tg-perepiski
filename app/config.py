@@ -53,8 +53,9 @@ def load_config() -> Config:
         export_media_mb = int(os.getenv("EXPORT_MEDIA_MB", "25").strip() or "25")
     except ValueError:
         export_media_mb = 25
-    # Потолок 35 МБ «сырых» медиа: base64 раздувает их на ~33% (≈47 МБ),
-    # что всё ещё влезает в лимит отправки файла ботом (50 МБ).
+    # Сколько «сырых» медиа встраивать. Итоговый файл дополнительно жёстко
+    # ограничен в export.py (MAX_FILE_BYTES ≈48 МБ, с учётом base64 и текста),
+    # поэтому за лимит отправки Telegram (50 МБ) выйти нельзя даже на потолке.
     export_media_mb = max(0, min(export_media_mb, 35))
 
     return Config(

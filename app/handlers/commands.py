@@ -6,13 +6,14 @@
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import FSInputFile, Message
 
 from app import keyboards as kb
 from app.config import Config
@@ -139,11 +140,8 @@ async def _do_export(
     )
 
     budget = config.export_media_mb * 1024 * 1024
-    html_doc, stats = await build_export(bot, messages, budget)
+    path, stats = await build_export(bot, messages, budget)
     stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M")
-    document = BufferedInputFile(
-        html_doc.encode("utf-8"), filename=f"perepiska_{stamp}.html"
-    )
 
     caption = (
         f"📦 Экспорт: {len(messages)} сообщений, встроено медиа: {stats.embedded}.\n"
@@ -155,6 +153,7 @@ async def _do_export(
     # Отправляем файл. Очистку делаем ТОЛЬКО после успешной доставки —
     # иначе данные пропали бы, не дойдя до владельца.
     try:
+        document = FSInputFile(path, filename=f"perepiska_{stamp}.html")
         await message.answer_document(document, caption=caption[:1024])
     except Exception as exc:
         await message.answer(
@@ -164,6 +163,11 @@ async def _do_export(
             reply_markup=kb.main_menu(),
         )
         return
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
     if purge or config.purge_after_export:
         count, freed = await db.purge_messages(uid)

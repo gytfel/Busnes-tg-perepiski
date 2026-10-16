@@ -2,69 +2,69 @@
 
 Медиа (фото, видео, голосовые, кружки, аудио, анимации, стикеры-картинки)
 скачиваются из Telegram и вшиваются в HTML через data:URI (base64), поэтому
-экспортный файл можно открыть в браузере и сразу смотреть/слушать вложения —
-без интернета и без Telegram.
+экспортный файл можно открыть в браузере и сразу смотреть/слушать вложения.
 
-Ограничения:
-- Облачный Bot API не отдаёт файлы больше ~20 МБ (getFile) — такие вложения
-  останутся подписью.
-- На один экспорт есть суммарный лимит встраиваемых медиа (budget), чтобы
-  итоговый файл влез в лимит отправки Telegram (≤50 МБ) и память сервера.
+Устойчивость:
+- HTML пишется потоково во временный файл на диске (а не собирается целиком в
+  память) — чтобы не словить OOM на маленьком сервере.
+- Бюджет считается по фактическому размеру ВЫХОДНОГО файла (с учётом base64 и
+  текста), плюс жёсткий потолок MAX_FILE_BYTES < лимита отправки Telegram 50 МБ.
+- Флуд-лимиты Telegram (429 retry_after) при скачивании повторяются, а не
+  трактуются как потеря файла.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramRetryAfter
 
 from app.utils import esc
 
 logger = logging.getLogger(__name__)
 
-# Расширение файла (из Telegram file_path) -> MIME.
+# Жёсткий потолок размера готового файла (запас под лимит отправки ботом 50 МБ).
+MAX_FILE_BYTES = 48 * 1024 * 1024
+# Запас под футер/хвост.
+RESERVE_BYTES = 256 * 1024
+# Небольшая пауза между скачиваниями, чтобы реже упираться во флуд-лимит.
+DOWNLOAD_PAUSE = 0.03
+# Сколько раз повторять скачивание при флуд-лимите (429).
+RETRY_ATTEMPTS = 5
+
 EXT_MIME: dict[str, str] = {
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "png": "image/png",
-    "webp": "image/webp",
-    "gif": "image/gif",
-    "oga": "audio/ogg",
-    "ogg": "audio/ogg",
-    "opus": "audio/ogg",
-    "mp3": "audio/mpeg",
-    "m4a": "audio/mp4",
-    "wav": "audio/wav",
-    "mp4": "video/mp4",
-    "webm": "video/webm",
-    "mov": "video/quicktime",
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "webp": "image/webp", "gif": "image/gif",
+    "oga": "audio/ogg", "ogg": "audio/ogg", "opus": "audio/ogg",
+    "mp3": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav",
+    "mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime",
 }
 
-# Запасной MIME по типу медиа, если расширение неизвестно.
 FALLBACK_MIME: dict[str, str] = {
-    "photo": "image/jpeg",
-    "voice": "audio/ogg",
-    "audio": "audio/mpeg",
-    "video": "video/mp4",
-    "video_note": "video/mp4",
-    "animation": "video/mp4",
-    "sticker": "image/webp",
+    "photo": "image/jpeg", "voice": "audio/ogg", "audio": "audio/mpeg",
+    "video": "video/mp4", "video_note": "video/mp4",
+    "animation": "video/mp4", "sticker": "image/webp",
 }
 
-# Типы, которые имеет смысл скачивать и встраивать.
 EMBEDDABLE = set(FALLBACK_MIME)
 
 
 @dataclass(slots=True)
 class ExportStats:
-    total: int = 0
-    embedded: int = 0
-    skipped_size: int = 0  # не влезло в бюджет
-    too_big: int = 0       # больше лимита getFile (~20 МБ)
-    failed: int = 0        # иная ошибка скачивания
-    bytes_used: int = 0
+    total: int = 0            # сообщений с медиа
+    embedded: int = 0         # встроено медиа
+    skipped_size: int = 0     # не влезло в бюджет/потолок
+    too_big: int = 0          # больше лимита getFile (~20 МБ)
+    failed: int = 0           # иная ошибка скачивания
+    media_bytes: int = 0      # сырой объём встроенных медиа
+    file_bytes: int = 0       # итоговый размер HTML-файла
+    truncated_msgs: int = 0   # сообщений не попало из-за потолка размера
     notes: list[str] = field(default_factory=list)
 
 
@@ -90,46 +90,137 @@ def _render_media(mime: str, b64: str, media_type: str) -> str:
 
 
 async def _download(bot: Bot, file_id: str) -> tuple[bytes, str]:
-    """Скачивает файл по file_id. Возвращает (bytes, file_path)."""
-    tg_file = await bot.get_file(file_id)
-    path = tg_file.file_path or ""
-    buf = await bot.download_file(path)
-    data = buf.read() if hasattr(buf, "read") else bytes(buf)
-    return data, path
+    """Скачивает файл по file_id с повторами при флуд-лимите (429)."""
+    await asyncio.sleep(DOWNLOAD_PAUSE)
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            tg_file = await bot.get_file(file_id)
+            path = tg_file.file_path or ""
+            buf = await bot.download_file(path)
+            data = buf.read() if hasattr(buf, "read") else bytes(buf)
+            return data, path
+        except TelegramRetryAfter as exc:
+            if attempt == RETRY_ATTEMPTS - 1:
+                raise
+            logger.info("Флуд-лимит, пауза %s c", exc.retry_after)
+            await asyncio.sleep(exc.retry_after + 1)
+    raise RuntimeError("unreachable")
 
 
 async def build_export(
-    bot: Bot, messages: list, budget_bytes: int
+    bot: Bot, messages: list, media_budget_bytes: int
 ) -> tuple[str, ExportStats]:
-    """Собирает HTML-экспорт со встроенными медиа. Возвращает (html, stats)."""
+    """Пишет HTML-экспорт во временный файл. Возвращает (путь, статистика).
+
+    Вызывающий обязан удалить файл после отправки.
+    """
     stats = ExportStats()
     generated = datetime.now(tz=timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    ceiling = MAX_FILE_BYTES - RESERVE_BYTES
 
-    body: list[str] = []
+    fd, path = tempfile.mkstemp(suffix=".html", prefix="export_")
+    total = 0
     current_chat: str | None = None
 
-    for m in messages:
-        chat_title = m.chat_title or "—"
-        if chat_title != current_chat:
-            current_chat = chat_title
-            body.append(f"<h2>💬 {esc(chat_title)}</h2>")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
 
-        cls = "msg out" if m.outgoing else "msg"
-        who = "Вы" if m.outgoing else (m.from_name or "собеседник")
-        body.append(f"<div class='{cls}'>")
-        body.append(f"<div class='meta'>{esc(who)} · {_fmt_ts(m.date)}</div>")
-        if m.text:
-            body.append(esc(m.text).replace("\n", "<br>"))
+            def write(chunk: str) -> int:
+                nonlocal total
+                fh.write(chunk)
+                n = len(chunk.encode("utf-8"))
+                total += n
+                return n
 
-        if m.media_type and m.file_id:
-            stats.total += 1
-            rendered = await _embed_one(bot, m, budget_bytes, stats)
-            body.append(rendered)
+            write(_head(generated, len(messages)))
 
-        if not m.text and not m.media_type:
-            body.append("<span class='empty'>(пустое сообщение)</span>")
-        body.append("</div>")
+            for idx, m in enumerate(messages):
+                # Защита от переполнения даже на одном тексте.
+                if total >= ceiling:
+                    stats.truncated_msgs = len(messages) - idx
+                    break
 
+                chat_title = m.chat_title or "—"
+                if chat_title != current_chat:
+                    current_chat = chat_title
+                    write(f"<h2>💬 {esc(chat_title)}</h2>")
+
+                cls = "msg out" if m.outgoing else "msg"
+                who = "Вы" if m.outgoing else (m.from_name or "собеседник")
+                write(f"<div class='{cls}'>")
+                write(f"<div class='meta'>{esc(who)} · {_fmt_ts(m.date)}</div>")
+                if m.text:
+                    write(esc(m.text).replace("\n", "<br>"))
+
+                if m.media_type and m.file_id:
+                    stats.total += 1
+                    write(await _embed_one(
+                        bot, m, media_budget_bytes, ceiling, total, stats
+                    ))
+
+                if not m.text and not m.media_type:
+                    write("<span class='empty'>(пустое сообщение)</span>")
+                write("</div>")
+
+            _collect_notes(stats)
+            write(_footer(stats))
+    except Exception:
+        # Не оставляем недописанный файл на диске.
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+
+    stats.file_bytes = total
+    return path, stats
+
+
+async def _embed_one(
+    bot: Bot, m, media_budget: int, ceiling: int, total: int, stats: ExportStats
+) -> str:
+    """HTML одного медиа: встроенный плеер или подпись-заглушка."""
+    placeholder = f"<div class='att'>[вложение: {esc(m.media_type)}]</div>"
+    too_large = f"<div class='att'>[вложение: {esc(m.media_type)} — не вошло по размеру]</div>"
+
+    if m.media_type not in EMBEDDABLE:
+        return placeholder
+    if stats.media_bytes >= media_budget:
+        stats.skipped_size += 1
+        return too_large
+
+    try:
+        data, file_path = await _download(bot, m.file_id)
+    except Exception as exc:
+        text = str(exc).lower()
+        if "too big" in text or "file is too big" in text:
+            stats.too_big += 1
+            return f"<div class='att'>[вложение: {esc(m.media_type)} — слишком большое]</div>"
+        logger.warning("Не удалось скачать %s: %s", m.media_type, exc)
+        stats.failed += 1
+        return f"<div class='att'>[вложение: {esc(m.media_type)} — ошибка скачивания]</div>"
+
+    if stats.media_bytes + len(data) > media_budget:
+        stats.skipped_size += 1
+        return too_large
+
+    mime = _mime_for(file_path, m.media_type)
+    if mime is None:
+        return placeholder
+
+    b64 = base64.b64encode(data).decode("ascii")
+    tag = _render_media(mime, b64, m.media_type)
+    # Потолок считаем по РЕАЛЬНОМУ размеру тега в выходном файле.
+    if total + len(tag.encode("utf-8")) > ceiling:
+        stats.skipped_size += 1
+        return too_large
+
+    stats.media_bytes += len(data)
+    stats.embedded += 1
+    return tag
+
+
+def _collect_notes(stats: ExportStats) -> None:
     if stats.skipped_size:
         stats.notes.append(
             f"{stats.skipped_size} вложений не вошли по размеру (лимит экспорта)."
@@ -140,43 +231,11 @@ async def build_export(
         )
     if stats.failed:
         stats.notes.append(f"{stats.failed} вложений не удалось скачать.")
-
-    return _wrap_html(body, generated, len(messages), stats), stats
-
-
-async def _embed_one(bot: Bot, m, budget_bytes: int, stats: ExportStats) -> str:
-    """Возвращает HTML для одного медиа: встроенный плеер или подпись-заглушка."""
-    placeholder = f"<div class='att'>[вложение: {esc(m.media_type)}]</div>"
-
-    if m.media_type not in EMBEDDABLE:
-        return placeholder
-    if stats.bytes_used >= budget_bytes:
-        stats.skipped_size += 1
-        return f"<div class='att'>[вложение: {esc(m.media_type)} — не вошло по размеру]</div>"
-
-    try:
-        data, path = await _download(bot, m.file_id)
-    except Exception as exc:  # файл слишком большой или иная ошибка
-        text = str(exc).lower()
-        if "too big" in text or "file is too big" in text:
-            stats.too_big += 1
-            return f"<div class='att'>[вложение: {esc(m.media_type)} — слишком большое]</div>"
-        logger.warning("Не удалось скачать %s: %s", m.media_type, exc)
-        stats.failed += 1
-        return f"<div class='att'>[вложение: {esc(m.media_type)} — ошибка скачивания]</div>"
-
-    if stats.bytes_used + len(data) > budget_bytes:
-        stats.skipped_size += 1
-        return f"<div class='att'>[вложение: {esc(m.media_type)} — не вошло по размеру]</div>"
-
-    mime = _mime_for(path, m.media_type)
-    if mime is None:
-        return placeholder
-
-    b64 = base64.b64encode(data).decode("ascii")
-    stats.bytes_used += len(data)
-    stats.embedded += 1
-    return _render_media(mime, b64, m.media_type)
+    if stats.truncated_msgs:
+        stats.notes.append(
+            f"{stats.truncated_msgs} сообщений не попали в файл — упёрлись в потолок "
+            "размера. Экспортируйте чаще или уменьшите EXPORT_MEDIA_MB."
+        )
 
 
 def _fmt_ts(ts: int) -> str:
@@ -186,13 +245,8 @@ def _fmt_ts(ts: int) -> str:
         return "—"
 
 
-def _wrap_html(body: list[str], generated: str, count: int, stats: ExportStats) -> str:
-    notes_html = ""
-    if stats.notes:
-        items = "".join(f"<li>{esc(n)}</li>" for n in stats.notes)
-        notes_html = f"<ul class='notes'>{items}</ul>"
-
-    head = [
+def _head(generated: str, count: int) -> str:
+    parts = [
         "<!doctype html><html lang='ru'><head><meta charset='utf-8'>",
         "<meta name='viewport' content='width=device-width, initial-scale=1'>",
         "<title>Экспорт переписки</title><style>",
@@ -211,10 +265,20 @@ def _wrap_html(body: list[str], generated: str, count: int, stats: ExportStats) 
         ".media.dl{color:#6ab7ff;} .notes{color:#f0b232;font-size:13px;}",
         "</style></head><body>",
         f"<h1>Экспорт переписки</h1><p class='meta'>Сформировано: {generated}. "
-        f"Сообщений: {count}. Встроено медиа: {stats.embedded} "
-        f"({stats.bytes_used // (1024*1024)} МБ).</p>",
-        notes_html,
+        f"Сообщений: {count}.</p>",
     ]
     if count == 0:
-        head.append("<p class='empty'>Нет сохранённых сообщений.</p>")
-    return "".join(head) + "".join(body) + "</body></html>"
+        parts.append("<p class='empty'>Нет сохранённых сообщений.</p>")
+    return "".join(parts)
+
+
+def _footer(stats: ExportStats) -> str:
+    notes_html = ""
+    if stats.notes:
+        items = "".join(f"<li>{esc(n)}</li>" for n in stats.notes)
+        notes_html = f"<ul class='notes'>{items}</ul>"
+    summary = (
+        f"<p class='meta'>Встроено медиа: {stats.embedded} "
+        f"({stats.media_bytes // (1024 * 1024)} МБ).</p>"
+    )
+    return summary + notes_html + "</body></html>"
