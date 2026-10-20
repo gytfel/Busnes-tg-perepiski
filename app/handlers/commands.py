@@ -170,11 +170,14 @@ async def _do_export(
             pass
 
     if purge or config.purge_after_export:
-        count, freed = await db.purge_messages(uid)
+        msg_count, conn_count, freed = await db.wipe_all()
+        conn_note = " и запись о подключении" if conn_count else ""
         await message.answer(
-            f"🧹 База очищена: удалено {count} сообщений, "
-            f"освобождено ~{_human_size(freed)}.\n"
-            "Новые сообщения продолжат сохраняться как обычно.",
+            f"🧹 <b>Сервер полностью очищен.</b>\n"
+            f"Удалено: {msg_count} сообщений{conn_note}, освобождено ~{_human_size(freed)}.\n\n"
+            "ℹ️ Медиафайлы на сервере не хранятся (только в Telegram) — лишнего не осталось.\n"
+            "Бот сам восстановит подключение при следующем событии, переписка "
+            "продолжит сохраняться.",
             reply_markup=kb.main_menu(),
         )
 

@@ -157,11 +157,33 @@ def _is_outgoing(message: Message) -> bool:
     return False
 
 
+async def _ensure_owner(bot: Bot, db: Database, connection_id: str):
+    """Владелец подключения; если записи нет (напр. после полной очистки) —
+    восстанавливаем её из Telegram через getBusinessConnection."""
+    owner = await db.get_owner(connection_id)
+    if owner is not None or not connection_id:
+        return owner
+    try:
+        conn = await bot.get_business_connection(connection_id)
+    except Exception as exc:
+        logger.warning("Не удалось восстановить подключение %s: %s", connection_id, exc)
+        return None
+    user_chat_id = getattr(conn, "user_chat_id", None) or conn.user.id
+    await db.save_connection(
+        conn.id, conn.user.id, user_chat_id,
+        bool(conn.is_enabled), _resolve_can_reply(conn),
+    )
+    logger.info("Подключение %s восстановлено после очистки", connection_id)
+    return await db.get_owner(connection_id)
+
+
 @router.business_message()
-async def on_business_message(message: Message, db: Database) -> None:
+async def on_business_message(message: Message, bot: Bot, db: Database) -> None:
     """Новое сообщение в чате владельца — сохраняем для возможного восстановления."""
     try:
         await _store(message, db)
+        # Восстанавливаем запись о подключении, если её нет (после очистки).
+        await _ensure_owner(bot, db, message.business_connection_id or "")
     except Exception as exc:
         logger.exception("Ошибка сохранения business_message: %s", exc)
 
@@ -181,7 +203,7 @@ async def on_edited_business_message(
         return
 
     old = await db.get_message(message.chat.id, message.message_id)
-    owner = await db.get_owner(message.business_connection_id or "")
+    owner = await _ensure_owner(bot, db, message.business_connection_id or "")
     # Обновляем сохранённую копию на новую версию.
     try:
         await _store(message, db)
@@ -228,7 +250,7 @@ async def on_deleted_business_messages(
     event: BusinessMessagesDeleted, bot: Bot, db: Database, config: Config
 ) -> None:
     """Сообщения удалены — присылаем владельцу сохранённые копии."""
-    owner = await db.get_owner(event.business_connection_id)
+    owner = await _ensure_owner(bot, db, event.business_connection_id)
     if owner is None:
         logger.info("Удаление в неизвестном подключении %s", event.business_connection_id)
         return

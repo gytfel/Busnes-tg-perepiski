@@ -235,11 +235,12 @@ class Database:
             rows = await cur.fetchall()
         return [self._row_to_message(r) for r in rows]
 
-    async def purge_messages(self, owner_id: int) -> tuple[int, int]:
-        """Удаляет все сохранённые сообщения владельца и сжимает БД (VACUUM).
+    async def wipe_all(self) -> tuple[int, int, int]:
+        """Полностью очищает БД: ВСЕ сообщения и ВСЕ подключения, затем VACUUM.
 
-        Подключения не трогаются — бот продолжает работать.
-        Возвращает (сколько удалено, сколько байт освобождено на диске).
+        Это «чистый лист»: на сервере не остаётся ни переписки, ни записи о
+        подключении. Бот восстановит подключение сам (getBusinessConnection)
+        при следующем событии. Возвращает (сообщений, подключений, байт освобождено).
         """
         assert self._db is not None
 
@@ -249,38 +250,24 @@ class Database:
             except OSError:
                 return 0
 
+        size_before = _size()
         async with self._lock:
-            cur = await self._db.execute(
-                """
-                SELECT COUNT(*) AS c FROM messages
-                WHERE connection_id IN (
-                    SELECT connection_id FROM connections WHERE owner_id = ?
-                )
-                """,
-                (owner_id,),
-            )
-            row = await cur.fetchone()
-            count = int(row["c"]) if row else 0
+            cur = await self._db.execute("SELECT COUNT(*) AS c FROM messages")
+            msg_count = int((await cur.fetchone())["c"])
+            cur = await self._db.execute("SELECT COUNT(*) AS c FROM connections")
+            conn_count = int((await cur.fetchone())["c"])
 
-            await self._db.execute(
-                """
-                DELETE FROM messages
-                WHERE connection_id IN (
-                    SELECT connection_id FROM connections WHERE owner_id = ?
-                )
-                """,
-                (owner_id,),
-            )
+            await self._db.execute("DELETE FROM messages")
+            await self._db.execute("DELETE FROM connections")
             await self._db.commit()
 
-            size_before = _size()
             # VACUUM нельзя внутри транзакции — после commit() она закрыта.
             await self._db.execute("VACUUM")
             await self._db.commit()
             size_after = _size()
 
         freed = max(0, size_before - size_after)
-        return count, freed
+        return msg_count, conn_count, freed
 
     async def count_messages(self, owner_id: int) -> int:
         assert self._db is not None
