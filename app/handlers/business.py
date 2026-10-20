@@ -74,6 +74,34 @@ async def on_business_connection(
         logger.warning("Не удалось уведомить владельца о подключении: %s", exc)
 
 
+def _is_location(message: Message) -> bool:
+    """Геопозиция, в т.ч. live-трансляция (она шлёт десятки edited-апдейтов)."""
+    return getattr(message, "location", None) is not None
+
+
+def _special_text(message: Message) -> str | None:
+    """Человекочитаемое описание для сообщений без текста (гео, контакт и т.п.)."""
+    loc = getattr(message, "location", None)
+    if loc is not None:
+        if getattr(loc, "live_period", None):
+            return "📍 Трансляция геопозиции"
+        return "📍 Геопозиция"
+    venue = getattr(message, "venue", None)
+    if venue is not None:
+        return f"📍 {venue.title}, {venue.address}"
+    contact = getattr(message, "contact", None)
+    if contact is not None:
+        name = " ".join(filter(None, [contact.first_name, contact.last_name]))
+        return f"👤 Контакт: {name} {contact.phone_number}".strip()
+    poll = getattr(message, "poll", None)
+    if poll is not None:
+        return f"📊 Опрос: {poll.question}"
+    dice = getattr(message, "dice", None)
+    if dice is not None:
+        return f"🎲 {dice.emoji}"
+    return None
+
+
 async def _store(message: Message, db: Database) -> None:
     media_type, file_id = extract_media(message)
     chat = message.chat
@@ -85,7 +113,7 @@ async def _store(message: Message, db: Database) -> None:
         from_name=user_title(message.from_user),
         chat_title=chat.full_name or chat.title or str(chat.id),
         outgoing=_is_outgoing(message),
-        text=message.text or message.caption,
+        text=message.text or message.caption or _special_text(message),
         media_type=media_type,
         file_id=file_id,
         date=int(message.date.timestamp()) if message.date else 0,
@@ -117,6 +145,15 @@ async def on_edited_business_message(
     message: Message, bot: Bot, db: Database, config: Config
 ) -> None:
     """Сообщение изменено — показываем владельцу старую и новую версии."""
+    # Трансляция геопозиции обновляется каждые несколько секунд через
+    # edited-апдейты. Тихо обновляем копию, но НЕ спамим уведомлениями.
+    if _is_location(message):
+        try:
+            await _store(message, db)
+        except Exception as exc:
+            logger.exception("Ошибка обновления геопозиции: %s", exc)
+        return
+
     old = await db.get_message(message.chat.id, message.message_id)
     owner = await db.get_owner(message.business_connection_id or "")
     # Обновляем сохранённую копию на новую версию.
@@ -131,7 +168,14 @@ async def on_edited_business_message(
     sender_name = old.from_name if old else user_title(message.from_user)
     chat_title = (old.chat_title if old else None) or message.chat.full_name or str(message.chat.id)
     old_text = old.text if old else None
-    new_text = message.text or message.caption
+    new_text = message.text or message.caption or _special_text(message)
+
+    # Нечего показывать: нет ни старой копии, ни нового текста — не шумим.
+    if not old_text and not new_text:
+        return
+    # Текст не изменился (частый случай «тихих» правок) — тоже не уведомляем.
+    if old_text is not None and old_text == new_text:
+        return
 
     header = (
         "✏️ <b>Сообщение изменено</b>\n"
