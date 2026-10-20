@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from aiogram import Bot, Router
@@ -13,6 +14,26 @@ from app.utils import deliver, esc, extract_media, user_title
 
 logger = logging.getLogger(__name__)
 router = Router(name="business")
+
+# Антиспам для уведомлений об изменении: одно и то же сообщение, которое правят
+# пачкой (таймеры/счётчики/дашборды ботов, трансляции), не должно засыпать
+# владельца. Копим КАЖДУЮ версию в БД как и раньше — глушим только уведомления.
+_EDIT_NOTIFY_WINDOW = 5.0
+_last_edit_notify: dict[tuple[int, int], float] = {}
+
+
+def _edit_too_frequent(chat_id: int, message_id: int) -> bool:
+    """True, если это же сообщение уведомлялось менее окна назад."""
+    now = time.monotonic()
+    key = (chat_id, message_id)
+    last = _last_edit_notify.get(key)
+    _last_edit_notify[key] = now
+    if len(_last_edit_notify) > 10000:  # лёгкая очистка старых ключей
+        cutoff = now - _EDIT_NOTIFY_WINDOW
+        for k, t in list(_last_edit_notify.items()):
+            if t < cutoff:
+                del _last_edit_notify[k]
+    return last is not None and (now - last) < _EDIT_NOTIFY_WINDOW
 
 
 def _resolve_can_reply(conn: BusinessConnection) -> bool:
@@ -75,20 +96,25 @@ async def on_business_connection(
 
 
 def _is_location(message: Message) -> bool:
-    """Геопозиция, в т.ч. live-трансляция (она шлёт десятки edited-апдейтов)."""
-    return getattr(message, "location", None) is not None
+    """Геопозиция/трансляция (шлёт десятки edited-апдейтов). Venue не считается:
+    у него тоже есть .location, но он статичен и не спамит."""
+    return (
+        getattr(message, "location", None) is not None
+        and getattr(message, "venue", None) is None
+    )
 
 
 def _special_text(message: Message) -> str | None:
     """Человекочитаемое описание для сообщений без текста (гео, контакт и т.п.)."""
+    # Venue проверяем до location: у venue есть и .venue, и .location.
+    venue = getattr(message, "venue", None)
+    if venue is not None:
+        return f"📍 {venue.title}, {venue.address}"
     loc = getattr(message, "location", None)
     if loc is not None:
         if getattr(loc, "live_period", None):
             return "📍 Трансляция геопозиции"
         return "📍 Геопозиция"
-    venue = getattr(message, "venue", None)
-    if venue is not None:
-        return f"📍 {venue.title}, {venue.address}"
     contact = getattr(message, "contact", None)
     if contact is not None:
         name = " ".join(filter(None, [contact.first_name, contact.last_name]))
@@ -175,6 +201,10 @@ async def on_edited_business_message(
         return
     # Текст не изменился (частый случай «тихих» правок) — тоже не уведомляем.
     if old_text is not None and old_text == new_text:
+        return
+    # Антиспам по частоте: одно и то же сообщение, правленное пачкой (таймеры,
+    # счётчики, дашборды ботов), не засыпает владельца уведомлениями.
+    if _edit_too_frequent(message.chat.id, message.message_id):
         return
 
     header = (
