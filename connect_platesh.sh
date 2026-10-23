@@ -62,8 +62,24 @@ fi
 systemctl is-active --quiet platesh \
     || err "служба Platesh не запущена. Запусти: systemctl start platesh   (журнал: journalctl -u platesh -n 30)"
 
+# Служба должна запускать бота из этой папки и читать этот .env — иначе записанное до бота не дойдёт.
+REINSTALL="cd $PROJECT_DIR && sudo bash install.sh && sudo bash connect_platesh.sh"
+[ "$(systemctl show -p LoadState --value "$SERVICE_NAME" 2>/dev/null)" = "loaded" ] \
+    || err "служба $SERVICE_NAME не установлена. Установи её:
+    $REINSTALL"
+UNIT_DIR="$(systemctl show -p WorkingDirectory --value "$SERVICE_NAME" 2>/dev/null || true)"
+UNIT_ENV="$(systemctl show -p EnvironmentFiles --value "$SERVICE_NAME" 2>/dev/null | awk '{print $1}' || true)"
+if [ "$(readlink -f "${UNIT_DIR:-/nonexistent}")" != "$(readlink -f "$PROJECT_DIR")" ] \
+    || [ "$(readlink -f "${UNIT_ENV:-/nonexistent}")" != "$(readlink -f "$ENV_FILE")" ]; then
+    err "служба $SERVICE_NAME запускает другую копию бота:
+    папка ${UNIT_DIR:-не указана}, настройки ${UNIT_ENV:-не указаны}
+а этот скрипт записал настройки в $ENV_FILE. Переустанови службу из этой папки одной командой:
+    $REINSTALL"
+fi
+
 say "Перезапускаю бота (на слабом сервере это может занять пару минут)…"
 SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
+systemctl daemon-reload
 systemctl restart "$SERVICE_NAME"
 # Ждём, пока бот загрузится и напишет в журнал, включилась ли оплата.
 for _ in $(seq 1 60); do
@@ -74,10 +90,40 @@ for _ in $(seq 1 60); do
         echo "   Журнал бота:  journalctl -u $SERVICE_NAME -f"
         exit 0
     fi
-    if printf '%s' "$LOG" | grep -qE "Платный доступ настроен не полностью|Traceback"; then
+    if printf '%s' "$LOG" | grep -qE "Платный доступ настроен не полностью|PLATESH_URL не задан|Traceback"; then
         break
     fi
     sleep 2
 done
 journalctl -u "$SERVICE_NAME" --since "$SINCE" -n 25 --no-pager || true
-err "бот не подтвердил подключение к Platesh — пришли журнал выше"
+
+# Что на самом деле получил бот и как выглядит .env — без токенов и ключей, можно присылать скриншотом.
+echo
+echo "--- Проверка (токенов и ключей здесь нет) ---"
+PID="$(systemctl show -p MainPID --value "$SERVICE_NAME" 2>/dev/null || echo 0)"
+if [ "${PID:-0}" != "0" ] && [ -r "/proc/$PID/environ" ]; then
+    if tr '\0' '\n' < "/proc/$PID/environ" | grep -q '^PLATESH_URL=.'; then
+        echo "Бот получил PLATESH_URL из .env."
+    else
+        echo "Бот НЕ получил PLATESH_URL: служба не смогла прочитать эти строки из $ENV_FILE (см. пометки ниже)."
+    fi
+fi
+echo "Строки $ENV_FILE (значения скрыты):"
+awk -v sq="'" '
+{
+    line = $0; cr = ""
+    if (sub(/\r$/, "", line)) cr = " [перевод строки Windows]"
+    if (line ~ /^[ \t]*(#|$)/) next
+    eq = index(line, "=")
+    if (!eq) { printf "  %d: (нет «=») ← строка не читается%s\n", NR, cr; next }
+    key = substr(line, 1, eq - 1); val = substr(line, eq + 1)
+    shown = (val == "") ? "(пусто)" : "…"
+    if (key ~ /^PLATESH_(URL|BOT|ADMINS|PRODUCTS)$/) shown = val
+    note = ""
+    if (key !~ /^[A-Za-z_][A-Za-z0-9_]*$/) note = note " ← неправильное имя"
+    q = substr(val, 1, 1)
+    if ((q == "\"" || q == sq) && index(substr(val, 2), q) == 0) note = note " ← кавычка не закрыта: строки ниже не прочитаются"
+    if (val ~ /\\$/) note = note " ← \\ в конце: склеится со следующей строкой"
+    printf "  %d: %s=%s%s%s\n", NR, key, shown, cr, note
+}' "$ENV_FILE"
+err "бот не подтвердил подключение к Platesh — пришли скриншот всего, что выше"
