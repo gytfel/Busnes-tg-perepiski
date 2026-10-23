@@ -32,7 +32,8 @@ BOT_TOKEN="$(grep -m1 '^BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- | tr -d "\r\"' ")
 say "Ищу этого бота в настройках Platesh…"
 ERR_FILE="$(mktemp)"
 trap 'rm -f "$ERR_FILE"' EXIT
-if ! LINES="$(cd "$PLATESH_DIR" && PLATESH_BOT_TOKEN="$BOT_TOKEN" .venv/bin/python -m platesh bot-env -c config.yaml 2>"$ERR_FILE")"; then
+# Не LINES: в терминале bash сам перезаписывает её высотой окна после любой внешней команды.
+if ! PLATESH_LINES="$(cd "$PLATESH_DIR" && PLATESH_BOT_TOKEN="$BOT_TOKEN" .venv/bin/python -m platesh bot-env -c config.yaml 2>"$ERR_FILE")"; then
     REASON="$(tail -n 5 "$ERR_FILE")"
     if [ -z "$REASON" ] || printf '%s' "$REASON" | grep -q "invalid choice"; then
         REASON="Platesh старой версии — обнови его той же командой установки:
@@ -40,17 +41,20 @@ if ! LINES="$(cd "$PLATESH_DIR" && PLATESH_BOT_TOKEN="$BOT_TOKEN" .venv/bin/pyth
     fi
     err "$REASON"
 fi
-NAME="$(printf '%s\n' "$LINES" | sed -n 's/^PLATESH_BOT=//p')"
-ADMINS="$(printf '%s\n' "$LINES" | sed -n 's/^PLATESH_ADMINS=//p')"
+printf '%s\n' "$PLATESH_LINES" | grep -q '^PLATESH_URL=.' \
+    || err "Platesh выдал непонятный ответ вместо настроек — обнови его: $PLATESH_INSTALL"
+NAME="$(printf '%s\n' "$PLATESH_LINES" | sed -n 's/^PLATESH_BOT=//p')"
+ADMINS="$(printf '%s\n' "$PLATESH_LINES" | sed -n 's/^PLATESH_ADMINS=//p')"
 say "Нашёл: бот «$NAME» в Platesh, без оплаты пользуются: ${ADMINS:-никто}"
 
 say "Записываю настройки в .env бота (старый сохранён как .env.bak)…"
 OWNER="$(stat -c '%U:%G' "$ENV_FILE")"
 cp -p "$ENV_FILE" "$ENV_FILE.bak"
-sed -i '/^PLATESH_/d' "$ENV_FILE"
+# Строки из одних цифр оставила прошлая версия этого скрипта (высота окна терминала вместо настроек).
+sed -i -E '/^PLATESH_/d; /^[0-9]+\r?$/d' "$ENV_FILE"
 # Файл мог заканчиваться без перевода строки — тогда новая строка склеилась бы с последней.
 if [ -s "$ENV_FILE" ] && [ -n "$(tail -c1 "$ENV_FILE")" ]; then echo >> "$ENV_FILE"; fi
-printf '%s\n' "$LINES" >> "$ENV_FILE"
+printf '%s\n' "$PLATESH_LINES" >> "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 chown "$OWNER" "$ENV_FILE"
 
