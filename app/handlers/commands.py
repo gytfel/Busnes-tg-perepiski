@@ -194,6 +194,11 @@ async def cmd_help(message: Message) -> None:
     await message.answer(HELP_TEXT, reply_markup=kb.main_menu())
 
 
+@router.message(Command("paysupport"))
+async def cmd_paysupport(message: Message, config: Config) -> None:
+    await message.answer(config.paysupport_text)
+
+
 @router.message(Command("status"))
 async def cmd_status(message: Message, db: Database) -> None:
     await _show_status(message, db)

@@ -14,6 +14,7 @@ class Config:
     bot_token: str
     # Необязательный явный ID владельца. Если не задан — владельцем считается
     # пользователь, который подключил бота к своему Telegram Business аккаунту.
+    # При платном доступе этот пользователь пользуется ботом без оплаты.
     owner_id: int | None
     db_path: str
     # Уведомлять ли владельца о сообщениях, которые он удалил сам.
@@ -26,6 +27,13 @@ class Config:
     export_media_mb: int
     # Автоматически очищать базу после каждого обычного экспорта.
     purge_after_export: bool
+    # Платный доступ через Platesh (PLATESH_URL, PLATESH_KEY, PLATESH_BOT в .env).
+    # Пусто — бот бесплатный для всех, как раньше.
+    platesh_url: str | None = None
+    # Какие товары Platesh открывают бота (через запятую). Пусто — любой оплаченный.
+    platesh_products: tuple[str, ...] = ()
+    # Ответ на /paysupport — Telegram требует его от ботов, принимающих оплату Stars.
+    paysupport_text: str = "По вопросам оплаты и возвратов напишите владельцу бота."
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -66,4 +74,10 @@ def load_config() -> Config:
         archive_chat_id=archive_chat_id,
         export_media_mb=export_media_mb,
         purge_after_export=_get_bool("PURGE_AFTER_EXPORT", False),
+        platesh_url=os.getenv("PLATESH_URL", "").strip() or None,
+        platesh_products=tuple(
+            p.strip() for p in os.getenv("PLATESH_PRODUCTS", "").split(",") if p.strip()
+        ),
+        paysupport_text=os.getenv("PAYSUPPORT_TEXT", "").strip()
+        or "По вопросам оплаты и возвратов напишите владельцу бота.",
     )
