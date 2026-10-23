@@ -39,16 +39,19 @@
 
 После оплаты всё работает как обычно. Когда подписка закончится, бот снова закроется.
 
-Как включить:
-1. На том же сервере установи Platesh (`curl ... install.sh | bash`, см. его README). На вопрос «У бота есть свой код?» ответь **«да»**, путь к файлу не указывай: бот запускается своей службой.
-2. В `.env` этого бота добавь (значения — из `/opt/platesh/.env` и `/opt/platesh/config.yaml`):
+Как включить (на сервере, где работает бот):
+1. Установи Platesh на этот же сервер:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/gytfel/Platesh/refs/heads/claude/beautiful-johnson-i6jquz/install.sh | bash
    ```
-   PLATESH_URL=http://127.0.0.1:8080
-   PLATESH_KEY=ключ BOT1_API_KEY
-   PLATESH_BOT=имя бота в Platesh
-   PLATESH_ADMINS=твой Telegram ID
+   Токен бота — тот же, что в `.env` этого бота. На вопрос «У бота есть свой код?» ответь **«д»**, путь к файлу не указывай: бот запускается своей службой.
+2. В папке бота выполни:
+   ```bash
+   sudo bash connect_platesh.sh
    ```
-3. Перезапусти бота: `sudo systemctl restart busnes-tg-perepiski`.
+   Скрипт сам найдёт бота в Platesh, запишет `PLATESH_*` в `.env` (старые строки `PLATESH_*` заменит, копия — `.env.bak`), перезапустит бота и покажет, включилась ли оплата.
+
+Вручную: строки для `.env` выдаёт сам Platesh — `cd /opt/platesh && PLATESH_BOT_TOKEN=токен .venv/bin/python -m platesh bot-env`.
 
 Без этих строк бот остаётся бесплатным, как раньше.
 

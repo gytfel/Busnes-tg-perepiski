@@ -12,7 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from app.config import Config, load_config
 from app.database import Database
 from app.handlers import business, commands
-from app.platesh_client import PlateshClient
+from app.platesh_client import PlateshClient, PlateshError
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,15 @@ def connect_platesh(config: Config) -> PlateshClient | None:
     if not config.platesh_url:
         logger.warning("PLATESH_URL не задан — платный доступ выключен, бот бесплатный для всех.")
         return None
-    platesh = PlateshClient.from_env()
+    try:
+        platesh = PlateshClient.from_env()
+    except PlateshError as exc:
+        # Не запускаемся бесплатно по ошибке: лучше понятная остановка, чем открытый доступ.
+        logger.error(
+            "Платный доступ настроен не полностью: %s. Исправь одной командой в папке бота: "
+            "sudo bash connect_platesh.sh", exc,
+        )
+        raise SystemExit(1) from None
     logger.info("Платный доступ через Platesh включён (%s, бот «%s»)", platesh.base_url, platesh.bot)
     return platesh
 
@@ -66,6 +74,7 @@ async def main() -> None:
     )
 
     config = load_config()
+    platesh = connect_platesh(config)
 
     db = Database(config.db_path)
     await db.init()
@@ -75,7 +84,6 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    platesh = connect_platesh(config)
     dp = build_dispatcher(db, config, platesh)
 
     # Явно подписываемся на бизнес-апдейты (их нужно перечислить в allowed_updates).
