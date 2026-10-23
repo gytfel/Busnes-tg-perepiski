@@ -62,14 +62,22 @@ fi
 systemctl is-active --quiet platesh \
     || err "служба Platesh не запущена. Запусти: systemctl start platesh   (журнал: journalctl -u platesh -n 30)"
 
-say "Перезапускаю бота…"
+say "Перезапускаю бота (на слабом сервере это может занять пару минут)…"
+SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
 systemctl restart "$SERVICE_NAME"
-sleep 5
-if journalctl -u "$SERVICE_NAME" --since "-30s" --no-pager | grep -q "Платный доступ через Platesh включён"; then
-    say "✅ Готово: платный доступ включён."
-    echo "   Проверь с другого аккаунта: напиши боту /start — должны появиться кнопки оплаты."
-    echo "   Журнал бота:  journalctl -u $SERVICE_NAME -f"
-else
-    journalctl -u "$SERVICE_NAME" -n 20 --no-pager || true
-    err "бот не подтвердил подключение к Platesh — пришли журнал выше"
-fi
+# Ждём, пока бот загрузится и напишет в журнал, включилась ли оплата.
+for _ in $(seq 1 60); do
+    LOG="$(journalctl -u "$SERVICE_NAME" --since "$SINCE" --no-pager 2>/dev/null || true)"
+    if printf '%s' "$LOG" | grep -q "Платный доступ через Platesh включён"; then
+        say "✅ Готово: платный доступ включён."
+        echo "   Проверь с другого аккаунта: напиши боту /start — должны появиться кнопки оплаты."
+        echo "   Журнал бота:  journalctl -u $SERVICE_NAME -f"
+        exit 0
+    fi
+    if printf '%s' "$LOG" | grep -qE "Платный доступ настроен не полностью|Traceback"; then
+        break
+    fi
+    sleep 2
+done
+journalctl -u "$SERVICE_NAME" --since "$SINCE" -n 25 --no-pager || true
+err "бот не подтвердил подключение к Platesh — пришли журнал выше"
