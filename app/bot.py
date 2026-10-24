@@ -17,15 +17,20 @@ from app.platesh_client import PlateshClient, PlateshError
 logger = logging.getLogger(__name__)
 
 PAYWALL_TEXT = (
-    "🔒 <b>Архиватор переписки для Telegram Business</b>\n\n"
-    "Сохраняю сообщения ваших чатов и присылаю копию, если собеседник <b>удалит</b> "
-    "или <b>изменит</b> сообщение. Плюс поиск и экспорт переписки.\n\n"
-    "Доступ открывается после оплаты:"
+    "🔒 <b>Бот ограничен</b>\n\n"
+    "Чтобы пользоваться ботом, нужна подписка. С ней я:\n"
+    "• сохраняю сообщения ваших чатов в Telegram Business;\n"
+    "• присылаю копию, если собеседник <b>удалит</b> или <b>изменит</b> сообщение;\n"
+    "• ищу по переписке и выгружаю её в файл.\n\n"
+    "Выберите подписку:"
 )
 BUSINESS_PAYWALL_TEXT = (
-    "🔒 Бот подключён, но <b>сохранять переписку начнёт после оплаты</b>. "
-    "До этого сообщения не записываются. Оформите доступ:"
+    "🔒 <b>Бот ограничен</b>\n\n"
+    "Бот подключён к вашему аккаунту, но <b>сохранять переписку начнёт после оформления подписки</b>. "
+    "До этого сообщения не записываются.\n\n"
+    "Выберите подписку:"
 )
+METHOD_TEXT = "Выберите способ оплаты:"
 
 
 def connect_platesh(config: Config) -> PlateshClient | None:
@@ -61,6 +66,7 @@ def build_dispatcher(db: Database, config: Config, platesh: PlateshClient | None
             exempt_users=[config.owner_id] if config.owner_id else (),
             text=PAYWALL_TEXT,
             business_text=BUSINESS_PAYWALL_TEXT,
+            method_text=METHOD_TEXT,
         )
     dp.include_router(commands.router)
     dp.include_router(business.router)
