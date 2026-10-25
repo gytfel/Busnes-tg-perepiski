@@ -31,6 +31,7 @@ BUSINESS_PAYWALL_TEXT = (
     "Выберите подписку:"
 )
 METHOD_TEXT = "Выберите способ оплаты:"
+COIN_TEXT = "Выберите монету:"
 
 
 def connect_platesh(config: Config) -> PlateshClient | None:
@@ -67,6 +68,7 @@ def build_dispatcher(db: Database, config: Config, platesh: PlateshClient | None
             text=PAYWALL_TEXT,
             business_text=BUSINESS_PAYWALL_TEXT,
             method_text=METHOD_TEXT,
+            coin_text=COIN_TEXT,
         )
     dp.include_router(commands.router)
     dp.include_router(business.router)
