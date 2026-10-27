@@ -37,6 +37,8 @@ RESERVE_BYTES = 256 * 1024
 DOWNLOAD_PAUSE = 0.03
 # Сколько раз повторять скачивание при флуд-лимите (429).
 RETRY_ATTEMPTS = 5
+# Размер чанка для потокового base64 (кратен 3, чтобы не было паддинга в середине).
+CHUNK_BYTES = 48 * 1024
 
 EXT_MIME: dict[str, str] = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
@@ -77,28 +79,35 @@ def _mime_for(file_path: str, media_type: str) -> str | None:
     return FALLBACK_MIME.get(media_type)
 
 
-def _render_media(mime: str, b64: str, media_type: str) -> str:
-    src = f"data:{mime};base64,{b64}"
+def _media_tags(mime: str, media_type: str) -> tuple[str, str]:
+    """HTML-обёртка медиа как (открытие с началом data:URI, закрытие).
+
+    Base64 пишется между ними потоково — чтобы не держать его копии в памяти.
+    """
+    head = f'data:{mime};base64,'
     if mime.startswith("image/"):
-        return f'<img class="media" loading="lazy" src="{src}">'
+        return f'<img class="media" loading="lazy" src="{head}', '">'
     if mime.startswith("audio/"):
-        return f'<audio class="media" controls preload="none" src="{src}"></audio>'
+        return f'<audio class="media" controls preload="none" src="{head}', '"></audio>'
     if mime.startswith("video/"):
         cls = "media round" if media_type == "video_note" else "media"
-        return f'<video class="{cls}" controls preload="none" src="{src}"></video>'
-    return f'<a class="media dl" download href="{src}">⬇️ скачать вложение</a>'
+        return f'<video class="{cls}" controls preload="none" src="{head}', '"></video>'
+    return f'<a class="media dl" download href="{head}', '">⬇️ скачать вложение</a>'
 
 
-async def _download(bot: Bot, file_id: str) -> tuple[bytes, str]:
-    """Скачивает файл по file_id с повторами при флуд-лимите (429)."""
+async def _download(bot: Bot, file_id: str):
+    """Скачивает файл по file_id с повторами при флуд-лимите (429).
+
+    Возвращает (поток BytesIO, путь) — поток, чтобы кодировать base64 чанками
+    и не копировать весь файл в память лишний раз.
+    """
     await asyncio.sleep(DOWNLOAD_PAUSE)
     for attempt in range(RETRY_ATTEMPTS):
         try:
             tg_file = await bot.get_file(file_id)
             path = tg_file.file_path or ""
             buf = await bot.download_file(path)
-            data = buf.read() if hasattr(buf, "read") else bytes(buf)
-            return data, path
+            return buf, path
         except TelegramRetryAfter as exc:
             if attempt == RETRY_ATTEMPTS - 1:
                 raise
@@ -157,9 +166,9 @@ async def build_export(
 
                 if m.media_type and m.file_id:
                     stats.total += 1
-                    write(await _embed_one(
-                        bot, m, media_budget_bytes, ceiling, total, stats
-                    ))
+                    await _embed_one(
+                        bot, m, media_budget_bytes, ceiling, total, stats, write
+                    )
 
                 if not m.text and not m.media_type:
                     write("<span class='empty'>(пустое сообщение)</span>")
@@ -180,47 +189,65 @@ async def build_export(
 
 
 async def _embed_one(
-    bot: Bot, m, media_budget: int, ceiling: int, total: int, stats: ExportStats
-) -> str:
-    """HTML одного медиа: встроенный плеер или подпись-заглушка."""
-    placeholder = f"<div class='att'>[вложение: {esc(m.media_type)}]</div>"
-    too_large = f"<div class='att'>[вложение: {esc(m.media_type)} — не вошло по размеру]</div>"
+    bot: Bot, m, media_budget: int, ceiling: int, total: int,
+    stats: ExportStats, write,
+) -> None:
+    """Пишет одно медиа через write(): встроенный плеер или подпись-заглушка.
+
+    Base64 кодируется ЧАНКАМИ и пишется напрямую в файл — чтобы не держать в
+    памяти ни полную копию файла, ни полную строку base64 (это и давало OOM).
+    """
+    att = lambda note="": write(  # noqa: E731
+        f"<div class='att'>[вложение: {esc(m.media_type)}{note}]</div>")
 
     if m.media_type not in EMBEDDABLE:
-        return placeholder
+        return att()
     if stats.media_bytes >= media_budget:
         stats.skipped_size += 1
-        return too_large
+        return att(" — не вошло по размеру")
 
     try:
-        data, file_path = await _download(bot, m.file_id)
+        buf, file_path = await _download(bot, m.file_id)
     except Exception as exc:
         text = str(exc).lower()
         if "too big" in text or "file is too big" in text:
             stats.too_big += 1
-            return f"<div class='att'>[вложение: {esc(m.media_type)} — слишком большое]</div>"
+            return att(" — слишком большое")
         logger.warning("Не удалось скачать %s: %s", m.media_type, exc)
         stats.failed += 1
-        return f"<div class='att'>[вложение: {esc(m.media_type)} — ошибка скачивания]</div>"
+        return att(" — ошибка скачивания")
 
-    if stats.media_bytes + len(data) > media_budget:
+    # Размер файла без копирования содержимого.
+    buf.seek(0, 2)
+    raw_len = buf.tell()
+    buf.seek(0)
+
+    if stats.media_bytes + raw_len > media_budget:
         stats.skipped_size += 1
-        return too_large
+        return att(" — не вошло по размеру")
 
     mime = _mime_for(file_path, m.media_type)
     if mime is None:
-        return placeholder
+        return att()
 
-    b64 = base64.b64encode(data).decode("ascii")
-    tag = _render_media(mime, b64, m.media_type)
-    # Потолок считаем по РЕАЛЬНОМУ размеру тега в выходном файле.
-    if total + len(tag.encode("utf-8")) > ceiling:
+    opening, closing = _media_tags(mime, m.media_type)
+    # Точный размер тега: префикс + base64(raw_len) + суффикс.
+    b64_len = (raw_len + 2) // 3 * 4
+    projected = len(opening.encode("utf-8")) + b64_len + len(closing.encode("utf-8"))
+    if total + projected > ceiling:
         stats.skipped_size += 1
-        return too_large
+        return att(" — не вошло по размеру")
 
-    stats.media_bytes += len(data)
+    write(opening)
+    while True:
+        chunk = buf.read(CHUNK_BYTES)  # кратно 3 → чистый base64 без паддинга
+        if not chunk:
+            break
+        write(base64.b64encode(chunk).decode("ascii"))
+    write(closing)
+
+    stats.media_bytes += raw_len
     stats.embedded += 1
-    return tag
 
 
 def _collect_notes(stats: ExportStats) -> None:
