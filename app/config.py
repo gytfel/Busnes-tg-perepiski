@@ -14,6 +14,7 @@ class Config:
     bot_token: str
     # Необязательный явный ID владельца. Если не задан — владельцем считается
     # пользователь, который подключил бота к своему Telegram Business аккаунту.
+    # При платном доступе этот пользователь пользуется ботом без оплаты.
     owner_id: int | None
     db_path: str
     # Уведомлять ли владельца о сообщениях, которые он удалил сам.
@@ -31,6 +32,13 @@ class Config:
     auto_export_mb: int
     # Как часто (сек) проверять размер БД для авто-выгрузки.
     auto_export_check_sec: int
+    # Платный доступ через Platesh (PLATESH_URL, PLATESH_KEY, PLATESH_BOT в .env).
+    # Пусто — бот бесплатный для всех, как раньше.
+    platesh_url: str | None = None
+    # Какие товары Platesh открывают бота (через запятую). Пусто — любой оплаченный.
+    platesh_products: tuple[str, ...] = ()
+    # Ответ на /paysupport — Telegram требует его от ботов, принимающих оплату Stars.
+    paysupport_text: str = "По вопросам оплаты и возвратов напишите владельцу бота."
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -79,12 +87,20 @@ def load_config() -> Config:
         purge_after_export=_get_bool("PURGE_AFTER_EXPORT", False),
         auto_export_mb=max(0, _get_int("AUTO_EXPORT_MB", 0)),
         auto_export_check_sec=max(30, _get_int("AUTO_EXPORT_CHECK_SEC", 300)),
+        platesh_url=os.getenv("PLATESH_URL", "").strip() or None,
+        platesh_products=tuple(
+            p.strip() for p in os.getenv("PLATESH_PRODUCTS", "").split(",") if p.strip()
+        ),
+        paysupport_text=os.getenv("PAYSUPPORT_TEXT", "").strip()
+        or "По вопросам оплаты и возвратов напишите владельцу бота.",
     )
 
 
 # Поля, которые можно менять «на лету» (перечиткой .env без перезапуска).
 # bot_token и db_path сюда НЕ входят — для них нужен рестарт.
 _RELOADABLE = (
+    # При включённом Platesh список тех, кто пользуется ботом без оплаты, собирается при запуске:
+    # новый OWNER_ID освободит от оплаты только после перезапуска.
     "owner_id",
     "notify_own_deletions",
     "archive_chat_id",
