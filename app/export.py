@@ -149,6 +149,9 @@ async def build_export(
                 who = "Вы" if m.outgoing else (m.from_name or "собеседник")
                 write(f"<div class='{cls}'>")
                 write(f"<div class='meta'>{esc(who)} · {_fmt_ts(m.date)}</div>")
+                fwd = getattr(m, "forward_from", None)
+                if fwd:
+                    write(f"<div class='fwd'>↪️ переслано от {esc(fwd)}</div>")
                 if m.text:
                     write(esc(m.text).replace("\n", "<br>"))
 
@@ -258,6 +261,7 @@ def _head(generated: str, count: int) -> str:
         "max-width:680px;} .msg.out{background:#2b5278;margin-left:auto;}",
         ".meta{font-size:12px;color:#8a98a5;margin-bottom:4px;}",
         ".att{font-size:12px;color:#f0b232;margin-top:4px;}",
+        ".fwd{font-size:12px;color:#6ab7ff;margin-bottom:4px;}",
         ".empty{color:#8a98a5;font-style:italic;}",
         ".media{display:block;margin-top:6px;max-width:320px;border-radius:10px;}",
         "audio.media{width:280px;} video.media{max-height:360px;}",

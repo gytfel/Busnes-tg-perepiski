@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS messages (
     text          TEXT,
     media_type    TEXT,
     file_id       TEXT,
+    forward_from  TEXT,
     date          INTEGER NOT NULL,
     PRIMARY KEY (chat_id, message_id)
 );
@@ -50,6 +51,7 @@ class StoredMessage:
     media_type: str | None
     file_id: str | None
     date: int
+    forward_from: str | None = None
 
 
 @dataclass(slots=True)
@@ -73,7 +75,16 @@ class Database:
             "pylower", 1, lambda s: s.lower() if s else s, deterministic=True
         )
         await self._db.executescript(SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Лёгкие миграции для баз, созданных старой версией."""
+        assert self._db is not None
+        cur = await self._db.execute("PRAGMA table_info(messages)")
+        cols = {row["name"] for row in await cur.fetchall()}
+        if "forward_from" not in cols:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN forward_from TEXT")
 
     async def close(self) -> None:
         if self._db is not None:
@@ -143,15 +154,17 @@ class Database:
                 """
                 INSERT INTO messages
                     (connection_id, chat_id, message_id, from_id, from_name,
-                     chat_title, outgoing, text, media_type, file_id, date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     chat_title, outgoing, text, media_type, file_id,
+                     forward_from, date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id, message_id) DO UPDATE SET
-                    text       = excluded.text,
-                    media_type = excluded.media_type,
-                    file_id    = excluded.file_id,
-                    from_id    = excluded.from_id,
-                    from_name  = excluded.from_name,
-                    chat_title = excluded.chat_title
+                    text         = excluded.text,
+                    media_type   = excluded.media_type,
+                    file_id      = excluded.file_id,
+                    from_id      = excluded.from_id,
+                    from_name    = excluded.from_name,
+                    chat_title   = excluded.chat_title,
+                    forward_from = excluded.forward_from
                 """,
                 (
                     msg.connection_id,
@@ -164,6 +177,7 @@ class Database:
                     msg.text,
                     msg.media_type,
                     msg.file_id,
+                    msg.forward_from,
                     msg.date,
                 ),
             )
@@ -183,6 +197,7 @@ class Database:
             media_type=row["media_type"],
             file_id=row["file_id"],
             date=row["date"],
+            forward_from=row["forward_from"],
         )
 
     async def get_message(self, chat_id: int, message_id: int) -> StoredMessage | None:

@@ -128,6 +128,33 @@ def _special_text(message: Message) -> str | None:
     return None
 
 
+def _forward_origin(message: Message) -> str | None:
+    """Источник пересланного сообщения (откуда его переслали в наш чат)."""
+    origin = getattr(message, "forward_origin", None)
+    if origin is not None:
+        otype = str(getattr(origin, "type", ""))
+        if otype == "user":
+            return user_title(getattr(origin, "sender_user", None))
+        if otype == "hidden_user":
+            return getattr(origin, "sender_user_name", None) or "скрытый пользователь"
+        if otype == "chat":
+            chat = getattr(origin, "sender_chat", None)
+            if chat is not None:
+                return getattr(chat, "title", None) or getattr(chat, "full_name", None)
+        if otype == "channel":
+            chat = getattr(origin, "chat", None)
+            if chat is not None:
+                return getattr(chat, "title", None)
+    # Фолбэк для старых версий API.
+    if getattr(message, "forward_from", None):
+        return user_title(message.forward_from)
+    if getattr(message, "forward_from_chat", None):
+        return getattr(message.forward_from_chat, "title", None)
+    if getattr(message, "forward_sender_name", None):
+        return message.forward_sender_name
+    return None
+
+
 async def _store(message: Message, db: Database) -> None:
     media_type, file_id = extract_media(message)
     chat = message.chat
@@ -143,6 +170,7 @@ async def _store(message: Message, db: Database) -> None:
         media_type=media_type,
         file_id=file_id,
         date=int(message.date.timestamp()) if message.date else 0,
+        forward_from=_forward_origin(message),
     )
     await db.save_message(stored)
 
@@ -283,6 +311,8 @@ async def on_deleted_business_messages(
             f"💬 Чат: {esc(stored.chat_title)}\n"
             f"🕒 {_fmt_date(stored.date)}"
         )
+        if stored.forward_from:
+            header += f"\n↪️ Переслано от: {esc(stored.forward_from)}"
         for chat_id in targets:
             try:
                 await deliver(
