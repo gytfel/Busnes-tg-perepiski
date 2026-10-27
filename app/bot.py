@@ -9,12 +9,29 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from app.config import load_config
+from app.config import Config, load_config, reload_into
 from app.database import Database
 from app.handlers import business, commands
 from app.maintenance import run_maintenance
 
 logger = logging.getLogger(__name__)
+
+# Как часто перечитывать .env для применения изменений на лету.
+ENV_RELOAD_INTERVAL = 30
+
+
+async def run_env_reloader(config: Config, interval: int = ENV_RELOAD_INTERVAL) -> None:
+    """Периодически перечитывает .env и применяет «горячие» поля без рестарта."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            changed = reload_into(config)
+            if changed:
+                logger.info("Перечитан .env, применено: %s", ", ".join(changed))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Не удалось перечитать .env (оставляю прежние значения)")
 
 
 async def main() -> None:
@@ -46,18 +63,24 @@ async def main() -> None:
     me = await bot.get_me()
     logger.info("Бот @%s запущен (id=%s)", me.username, me.id)
 
-    # Фоновая авто-выгрузка при приближении БД к лимиту (если включена).
-    maintenance_task = asyncio.create_task(run_maintenance(bot, db, config))
+    # Фоновые задачи: авто-выгрузка при приближении БД к лимиту и
+    # перечитка .env для применения изменений без перезапуска.
+    background = [
+        asyncio.create_task(run_maintenance(bot, db, config)),
+        asyncio.create_task(run_env_reloader(config)),
+    ]
 
     try:
         await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(bot, allowed_updates=allowed_updates)
     finally:
-        maintenance_task.cancel()
-        try:
-            await maintenance_task
-        except asyncio.CancelledError:
-            pass
+        for task in background:
+            task.cancel()
+        for task in background:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await bot.session.close()
         await db.close()
 

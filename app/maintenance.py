@@ -33,29 +33,30 @@ def _human(num: int) -> str:
 
 
 async def run_maintenance(bot: Bot, db: Database, config: Config) -> None:
-    """Фоновый цикл: следит за размером БД и запускает авто-выгрузку."""
-    if not config.auto_export_mb:
-        logger.info("Авто-выгрузка выключена (AUTO_EXPORT_MB=0).")
-        return
+    """Фоновый цикл: следит за размером БД и запускает авто-выгрузку.
 
-    limit = config.auto_export_mb * 1024 * 1024
-    trigger = int(limit * TRIGGER_FRACTION)
-    backoff_until = 0.0
+    Значения лимита/интервала читаются из config на КАЖДОЙ итерации, поэтому
+    включение/выключение и смена лимита через перечитку .env применяются на лету.
+    """
     logger.info(
-        "Авто-выгрузка включена: порог %s (лимит %s), проверка каждые %s c.",
-        _human(trigger), _human(limit), config.auto_export_check_sec,
+        "Фоновое обслуживание запущено (авто-выгрузка: %s).",
+        "включена" if config.auto_export_mb else "выключена",
     )
+    backoff_until = 0.0
 
     while True:
-        await asyncio.sleep(config.auto_export_check_sec)
+        await asyncio.sleep(max(30, config.auto_export_check_sec))
         try:
+            if not config.auto_export_mb:
+                continue  # выключено — ждём (может включиться перечиткой .env)
+            trigger = int(config.auto_export_mb * 1024 * 1024 * TRIGGER_FRACTION)
             if db.db_size_bytes() < trigger:
                 continue
             if time.monotonic() < backoff_until:
                 continue
-            logger.info("БД %s — запускаю авто-выгрузку.", _human(db.db_size_bytes()))
-            freed = await _auto_export_all(bot, db, config)
-            if not freed:
+            logger.info("БД %s ≥ порога %s — запускаю авто-выгрузку.",
+                        _human(db.db_size_bytes()), _human(trigger))
+            if not await _auto_export_all(bot, db, config):
                 backoff_until = time.monotonic() + FAIL_BACKOFF_SEC
         except asyncio.CancelledError:
             raise

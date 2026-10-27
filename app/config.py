@@ -80,3 +80,35 @@ def load_config() -> Config:
         auto_export_mb=max(0, _get_int("AUTO_EXPORT_MB", 0)),
         auto_export_check_sec=max(30, _get_int("AUTO_EXPORT_CHECK_SEC", 300)),
     )
+
+
+# Поля, которые можно менять «на лету» (перечиткой .env без перезапуска).
+# bot_token и db_path сюда НЕ входят — для них нужен рестарт.
+_RELOADABLE = (
+    "owner_id",
+    "notify_own_deletions",
+    "archive_chat_id",
+    "export_media_mb",
+    "purge_after_export",
+    "auto_export_mb",
+    "auto_export_check_sec",
+)
+
+
+def reload_into(config: Config, dotenv_path: str | None = None) -> list[str]:
+    """Перечитывает .env и обновляет «горячие» поля config на месте.
+
+    Возвращает список изменившихся полей в виде ["name=value", ...].
+    Токен и путь к БД не трогаются. Если .env временно некорректен
+    (напр. нет токена) — пробрасывает исключение, вызывающий его гасит.
+    dotenv_path — явный путь к .env (по умолчанию авто-поиск, как при старте).
+    """
+    load_dotenv(dotenv_path=dotenv_path, override=True)
+    fresh = load_config()
+    changed: list[str] = []
+    for name in _RELOADABLE:
+        new_value = getattr(fresh, name)
+        if getattr(config, name) != new_value:
+            setattr(config, name, new_value)
+            changed.append(f"{name}={new_value}")
+    return changed
