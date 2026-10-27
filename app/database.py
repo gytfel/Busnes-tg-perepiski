@@ -250,6 +250,59 @@ class Database:
             rows = await cur.fetchall()
         return [self._row_to_message(r) for r in rows]
 
+    def db_size_bytes(self) -> int:
+        try:
+            return os.path.getsize(self.path)
+        except OSError:
+            return 0
+
+    async def distinct_owners(self) -> list[int]:
+        assert self._db is not None
+        async with self._lock:
+            cur = await self._db.execute("SELECT DISTINCT owner_id FROM connections")
+            return [row["owner_id"] for row in await cur.fetchall()]
+
+    async def clear_messages(self, owner_id: int) -> tuple[int, int]:
+        """Удаляет сообщения владельца, но ОСТАВЛЯЕТ подключение. Сжимает БД.
+
+        Для авто-обслуживания: освобождает место, бот продолжает работать без
+        переподключения. Возвращает (удалено сообщений, освобождено байт).
+        """
+        assert self._db is not None
+
+        def _size() -> int:
+            try:
+                return os.path.getsize(self.path)
+            except OSError:
+                return 0
+
+        size_before = _size()
+        async with self._lock:
+            cur = await self._db.execute(
+                """
+                SELECT COUNT(*) AS c FROM messages
+                WHERE connection_id IN (
+                    SELECT connection_id FROM connections WHERE owner_id = ?
+                )
+                """,
+                (owner_id,),
+            )
+            count = int((await cur.fetchone())["c"])
+            await self._db.execute(
+                """
+                DELETE FROM messages
+                WHERE connection_id IN (
+                    SELECT connection_id FROM connections WHERE owner_id = ?
+                )
+                """,
+                (owner_id,),
+            )
+            await self._db.commit()
+            await self._db.execute("VACUUM")
+            await self._db.commit()
+            size_after = _size()
+        return count, max(0, size_before - size_after)
+
     async def wipe_all(self) -> tuple[int, int, int]:
         """Полностью очищает БД: ВСЕ сообщения и ВСЕ подключения, затем VACUUM.
 

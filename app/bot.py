@@ -12,6 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from app.config import load_config
 from app.database import Database
 from app.handlers import business, commands
+from app.maintenance import run_maintenance
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,18 @@ async def main() -> None:
     me = await bot.get_me()
     logger.info("Бот @%s запущен (id=%s)", me.username, me.id)
 
+    # Фоновая авто-выгрузка при приближении БД к лимиту (если включена).
+    maintenance_task = asyncio.create_task(run_maintenance(bot, db, config))
+
     try:
         await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(bot, allowed_updates=allowed_updates)
     finally:
+        maintenance_task.cancel()
+        try:
+            await maintenance_task
+        except asyncio.CancelledError:
+            pass
         await bot.session.close()
         await db.close()
 

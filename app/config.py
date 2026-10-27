@@ -26,6 +26,11 @@ class Config:
     export_media_mb: int
     # Автоматически очищать базу после каждого обычного экспорта.
     purge_after_export: bool
+    # Авто-выгрузка: когда файл БД подходит к этому размеру (МБ), бот сам
+    # делает экспорт и очищает базу. 0 — выключено.
+    auto_export_mb: int
+    # Как часто (сек) проверять размер БД для авто-выгрузки.
+    auto_export_check_sec: int
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -58,6 +63,12 @@ def load_config() -> Config:
     # поэтому за лимит отправки Telegram (50 МБ) выйти нельзя даже на потолке.
     export_media_mb = max(0, min(export_media_mb, 35))
 
+    def _get_int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)).strip() or default)
+        except ValueError:
+            return default
+
     return Config(
         bot_token=token,
         owner_id=owner_id,
@@ -66,4 +77,6 @@ def load_config() -> Config:
         archive_chat_id=archive_chat_id,
         export_media_mb=export_media_mb,
         purge_after_export=_get_bool("PURGE_AFTER_EXPORT", False),
+        auto_export_mb=max(0, _get_int("AUTO_EXPORT_MB", 0)),
+        auto_export_check_sec=max(30, _get_int("AUTO_EXPORT_CHECK_SEC", 300)),
     )
