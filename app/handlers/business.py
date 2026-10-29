@@ -273,6 +273,36 @@ async def on_edited_business_message(
             logger.warning("Не удалось отправить уведомление об изменении: %s", exc)
 
 
+async def _notify_bulk_delete(
+    bot: Bot, db: Database, event: BusinessMessagesDeleted, targets: list[int]
+) -> None:
+    """Сводное уведомление о массовом удалении (вся переписка/очистка чата)."""
+    # Имя собеседника берём из любой сохранённой входящей копии (первые N id).
+    sender = None
+    for mid in event.message_ids[:20]:
+        stored = await db.get_message(event.chat.id, mid)
+        if stored and not stored.outgoing and stored.from_name:
+            sender = stored.from_name
+            break
+
+    chat_name = event.chat.full_name or event.chat.title or str(event.chat.id)
+    text = (
+        "🧨 <b>Удалена вся переписка</b>\n"
+        f"💬 Чат: {esc(chat_name)}\n"
+    )
+    if sender:
+        text += f"👤 Собеседник: {esc(sender)}\n"
+    text += (
+        f"Удалено сразу: <b>{len(event.message_ids)}</b> сообщений.\n"
+        "📦 Сохранённые копии на месте — откройте «Экспорт», чтобы их посмотреть."
+    )
+    for chat_id in targets:
+        try:
+            await bot.send_message(chat_id, text)
+        except Exception as exc:
+            logger.warning("Ошибка уведомления о массовом удалении: %s", exc)
+
+
 @router.deleted_business_messages()
 async def on_deleted_business_messages(
     event: BusinessMessagesDeleted, bot: Bot, db: Database, config: Config
@@ -284,6 +314,12 @@ async def on_deleted_business_messages(
         return
 
     targets = _targets(owner.owner_id, config)
+
+    # Массовое удаление (очистка/удаление всей переписки у обоих) — одно
+    # сводное уведомление вместо потока отдельных.
+    if len(event.message_ids) >= config.bulk_delete_threshold:
+        await _notify_bulk_delete(bot, db, event, targets)
+        return
 
     for message_id in event.message_ids:
         stored = await db.get_message(event.chat.id, message_id)
