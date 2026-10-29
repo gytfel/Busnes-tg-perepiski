@@ -32,6 +32,9 @@ class Config:
     auto_export_mb: int
     # Как часто (сек) проверять размер БД для авто-выгрузки.
     auto_export_check_sec: int
+    # Со скольких удалённых за раз сообщений считать это удалением всей
+    # переписки (одно сводное уведомление вместо потока отдельных).
+    bulk_delete_threshold: int
     # Платный доступ через Platesh (PLATESH_URL, PLATESH_KEY, PLATESH_BOT в .env).
     # Пусто — бот бесплатный для всех, как раньше.
     platesh_url: str | None = None
@@ -87,6 +90,7 @@ def load_config() -> Config:
         purge_after_export=_get_bool("PURGE_AFTER_EXPORT", False),
         auto_export_mb=max(0, _get_int("AUTO_EXPORT_MB", 0)),
         auto_export_check_sec=max(30, _get_int("AUTO_EXPORT_CHECK_SEC", 300)),
+        bulk_delete_threshold=max(2, _get_int("BULK_DELETE_THRESHOLD", 5)),
         platesh_url=os.getenv("PLATESH_URL", "").strip() or None,
         platesh_products=tuple(
             p.strip() for p in os.getenv("PLATESH_PRODUCTS", "").split(",") if p.strip()
@@ -108,6 +112,7 @@ _RELOADABLE = (
     "purge_after_export",
     "auto_export_mb",
     "auto_export_check_sec",
+    "bulk_delete_threshold",
 )
 
 
