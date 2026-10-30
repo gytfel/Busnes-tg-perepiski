@@ -95,6 +95,15 @@ async def on_business_connection(
         logger.warning("Не удалось уведомить владельца о подключении: %s", exc)
 
 
+def _clean_name(value) -> str | None:
+    """Пустое/пробелы/строку "None" (aiogram отдаёт её для чата без имени)
+    считаем отсутствием имени."""
+    if not value:
+        return None
+    s = str(value).strip()
+    return s if s and s != "None" else None
+
+
 def _is_location(message: Message) -> bool:
     """Геопозиция/трансляция (шлёт десятки edited-апдейтов). Venue не считается:
     у него тоже есть .location, но он статичен и не спамит."""
@@ -164,7 +173,7 @@ async def _store(message: Message, db: Database) -> None:
         message_id=message.message_id,
         from_id=message.from_user.id if message.from_user else None,
         from_name=user_title(message.from_user),
-        chat_title=chat.full_name or chat.title or str(chat.id),
+        chat_title=_clean_name(chat.full_name) or _clean_name(chat.title) or f"id {chat.id}",
         outgoing=_is_outgoing(message),
         text=message.text or message.caption or _special_text(message),
         media_type=media_type,
@@ -285,7 +294,12 @@ async def _notify_bulk_delete(
             sender = stored.from_name
             break
 
-    chat_name = event.chat.full_name or event.chat.title or str(event.chat.id)
+    chat_name = (
+        await db.get_chat_name(event.chat.id)
+        or _clean_name(event.chat.full_name)
+        or _clean_name(event.chat.title)
+        or f"id {event.chat.id}"
+    )
     text = (
         "🧨 <b>Удалена вся переписка</b>\n"
         f"💬 Чат: {esc(chat_name)}\n"
@@ -325,9 +339,15 @@ async def on_deleted_business_messages(
         stored = await db.get_message(event.chat.id, message_id)
 
         if stored is None:
+            chat_name = (
+                await db.get_chat_name(event.chat.id)
+                or _clean_name(event.chat.full_name)
+                or _clean_name(event.chat.title)
+                or f"id {event.chat.id}"
+            )
             header = (
                 "🗑 <b>Удалено сообщение</b>\n"
-                f"💬 Чат: {esc(event.chat.full_name or str(event.chat.id))}\n"
+                f"💬 Чат: {esc(chat_name)}\n"
                 "<i>Нет сохранённой копии (сообщение пришло до запуска бота).</i>"
             )
             for chat_id in targets:

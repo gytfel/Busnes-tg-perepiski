@@ -210,6 +210,27 @@ class Database:
             row = await cur.fetchone()
         return self._row_to_message(row) if row is not None else None
 
+    async def get_chat_name(self, chat_id: int) -> str | None:
+        """Имя чата из любой сохранённой записи этого чата (последней по времени).
+
+        Нужно, когда в событии удаления приходит только id без имени. Чистит
+        возможную строку "None", сохранённую старой версией.
+        """
+        assert self._db is not None
+        async with self._lock:
+            cur = await self._db.execute(
+                "SELECT chat_title, from_name FROM messages WHERE chat_id = ? "
+                "ORDER BY date DESC LIMIT 1",
+                (chat_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        for value in (row["chat_title"], row["from_name"]):
+            if value and str(value).strip() and str(value).strip() != "None":
+                return str(value).strip()
+        return None
+
     async def search_messages(
         self, owner_id: int, query: str, limit: int = 20
     ) -> list[StoredMessage]:
