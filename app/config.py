@@ -18,6 +18,9 @@ class Config:
     db_path: str
     # Уведомлять ли владельца о сообщениях, которые он удалил сам.
     notify_own_deletions: bool
+    # Уведомлять ли об удалении сообщений, копии которых нет (пришли до запуска
+    # бота). Бесполезны (показывать нечего) — по умолчанию выключено.
+    notify_unsaved_deletions: bool
     # Необязательный ID канала/группы-«архива», куда дублировать удалённые
     # и изменённые сообщения. Бот должен быть участником/админом этого чата.
     archive_chat_id: int | None
@@ -77,6 +80,7 @@ def load_config() -> Config:
         owner_id=owner_id,
         db_path=os.getenv("DB_PATH", "messages.db").strip() or "messages.db",
         notify_own_deletions=_get_bool("NOTIFY_OWN_DELETIONS", True),
+        notify_unsaved_deletions=_get_bool("NOTIFY_UNSAVED_DELETIONS", False),
         archive_chat_id=archive_chat_id,
         export_media_mb=export_media_mb,
         purge_after_export=_get_bool("PURGE_AFTER_EXPORT", False),
@@ -91,6 +95,7 @@ def load_config() -> Config:
 _RELOADABLE = (
     "owner_id",
     "notify_own_deletions",
+    "notify_unsaved_deletions",
     "archive_chat_id",
     "export_media_mb",
     "purge_after_export",

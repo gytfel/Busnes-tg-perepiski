@@ -335,26 +335,13 @@ async def on_deleted_business_messages(
         await _notify_bulk_delete(bot, db, event, targets)
         return
 
+    unsaved = 0
     for message_id in event.message_ids:
         stored = await db.get_message(event.chat.id, message_id)
 
         if stored is None:
-            chat_name = (
-                await db.get_chat_name(event.chat.id)
-                or _clean_name(event.chat.full_name)
-                or _clean_name(event.chat.title)
-                or f"id {event.chat.id}"
-            )
-            header = (
-                "🗑 <b>Удалено сообщение</b>\n"
-                f"💬 Чат: {esc(chat_name)}\n"
-                "<i>Нет сохранённой копии (сообщение пришло до запуска бота).</i>"
-            )
-            for chat_id in targets:
-                try:
-                    await bot.send_message(chat_id, header)
-                except Exception as exc:
-                    logger.warning("Ошибка уведомления об удалении: %s", exc)
+            # Нет копии (сообщение пришло до запуска бота) — показывать нечего.
+            unsaved += 1
             continue
 
         # Пропустить удаления, сделанные самим владельцем, если так настроено.
@@ -381,3 +368,31 @@ async def on_deleted_business_messages(
                 )
             except Exception as exc:
                 logger.warning("Ошибка доставки удалённого сообщения: %s", exc)
+
+    # Удаления без сохранённой копии бесполезны (показывать нечего) и часто идут
+    # пачкой при удалении старых сообщений. По умолчанию молчим; при включённом
+    # NOTIFY_UNSAVED_DELETIONS — одно сводное уведомление, не поток.
+    if unsaved and config.notify_unsaved_deletions:
+        chat_name = (
+            await db.get_chat_name(event.chat.id)
+            or _clean_name(event.chat.full_name)
+            or _clean_name(event.chat.title)
+            or f"id {event.chat.id}"
+        )
+        if unsaved == 1:
+            body = (
+                "🗑 <b>Удалено сообщение</b>\n"
+                f"💬 Чат: {esc(chat_name)}\n"
+                "<i>Нет сохранённой копии (пришло до запуска бота).</i>"
+            )
+        else:
+            body = (
+                f"🗑 <b>Удалено сообщений: {unsaved}</b>\n"
+                f"💬 Чат: {esc(chat_name)}\n"
+                "<i>Нет сохранённых копий (пришли до запуска бота).</i>"
+            )
+        for chat_id in targets:
+            try:
+                await bot.send_message(chat_id, body)
+            except Exception as exc:
+                logger.warning("Ошибка уведомления об удалении: %s", exc)
