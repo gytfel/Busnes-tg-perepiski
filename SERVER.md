@@ -210,6 +210,12 @@ rm -rf /opt/platesh
 
 Сначала посмотри журнал: `journalctl -u busnes-tg-perepiski -n 50 --no-pager`.
 
+**Бот пускает без оплаты.** Скрипт проверит всё сам и назовёт причину. `ID` — номер аккаунта, который прошёл без оплаты (напиши с него @userinfobot):
+
+```bash
+cd /opt/archiver && bash check_paywall.sh ID
+```
+
 | Что видно | Что делать |
 |---|---|
 | Бот вообще не отвечает | Журнал бота. Если в нём `Conflict: terminated by other getUpdates request`, этот же бот запущен где-то ещё (на компьютере или старом сервере). Останови его там |
