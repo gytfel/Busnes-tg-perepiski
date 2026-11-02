@@ -109,6 +109,26 @@ if [ -n "$USER_ID" ]; then
     fi
 fi
 
+if [ -n "$USER_ID" ] && [ -r /dev/tty ] && [ "${SKIP_LIVE:-}" != "1" ]; then
+    echo "5. Проверка вживую"
+    START="$(date '+%Y-%m-%d %H:%M:%S')"
+    read -r -p "  Напиши боту /start с аккаунта $USER_ID, дождись ответа и нажми здесь Enter... " _ </dev/tty
+    sleep 2
+    LIVE="$(journalctl -u "$SERVICE_NAME" --since "$START" --no-pager 2>/dev/null)"
+    if printf '%s\n' "$LIVE" | grep -q "Пейволл: $USER_ID — подписки нет"; then
+        ok "этот сервер получил /start и показал предложение оплатить — платный доступ работает"
+        info "если в Telegram пришло меню бота, а не «🔒 Бот ограничен», его прислала другая копия бота: замени токен в @BotFather"
+    elif printf '%s\n' "$LIVE" | grep -q "Пейволл: $USER_ID"; then
+        info "журнал: $(printf '%s\n' "$LIVE" | grep "Пейволл: $USER_ID" | tail -n 1 | sed 's/.*Пейволл: //')"
+    elif printf '%s\n' "$LIVE" | grep -q "Update id="; then
+        bad "этот сервер получил сообщение, но пейволл его не проверил: обнови бота (cd $PROJECT_DIR && git pull && systemctl restart $SERVICE_NAME) и повтори проверку"
+    else
+        bad "этот сервер сообщение НЕ получил — его забрала другая копия бота (старый сервер, компьютер), и она бесплатная"
+        info "надёжнее всего заменить токен: @BotFather → /mybots → бот → API Token → Revoke current token."
+        info "Новый токен впиши в $PLATESH_DIR/.env (BOT1_TOKEN=) и $ENV_FILE (BOT_TOKEN=), потом: systemctl restart platesh $SERVICE_NAME"
+    fi
+fi
+
 echo
 if [ "$PROBLEMS" = 0 ]; then
     echo "Ошибок не найдено."
