@@ -32,6 +32,21 @@ else
 fi
 
 echo "2. Служба бота"
+# Какой бот на самом деле работает на этом сервере: номер — часть токена до двоеточия, он не меняется
+# при замене токена в @BotFather. Сам токен не показываем.
+TOKEN="$(env_value BOT_TOKEN)"
+BOT_NAME=""
+if [ -n "$TOKEN" ]; then
+    ME="$(curl -s -m 10 "https://api.telegram.org/bot$TOKEN/getMe" 2>/dev/null)"
+    BOT_NAME="$(printf '%s' "$ME" | grep -o '"username":"[^"]*"' | cut -d'"' -f4)"
+    if [ -n "$BOT_NAME" ]; then
+        info "на этом сервере работает бот @$BOT_NAME (номер ${TOKEN%%:*}) — проверяй оплату, когда пишешь именно ему"
+    elif printf '%s' "$ME" | grep -q '"ok":false'; then
+        bad "Telegram не принял токен из $ENV_FILE (бот номер ${TOKEN%%:*}): токен устарел или вписан с ошибкой"
+    else
+        info "не удалось спросить Telegram, какой это бот (номер ${TOKEN%%:*})"
+    fi
+fi
 if [ "$(systemctl show -p LoadState --value "$SERVICE_NAME" 2>/dev/null)" != "loaded" ]; then
     bad "служба $SERVICE_NAME не установлена: cd $PROJECT_DIR && bash install.sh"
 else
@@ -123,8 +138,8 @@ if [ -n "$USER_ID" ] && [ -r /dev/tty ] && [ "${SKIP_LIVE:-}" != "1" ]; then
     elif printf '%s\n' "$LIVE" | grep -q "Update id="; then
         bad "этот сервер получил сообщение, но пейволл его не проверил: обнови бота (cd $PROJECT_DIR && git pull && systemctl restart $SERVICE_NAME) и повтори проверку"
     else
-        bad "этот сервер сообщение НЕ получил — его забрала другая копия бота (старый сервер, компьютер), и она бесплатная"
-        info "надёжнее всего заменить токен: @BotFather → /mybots → бот → API Token → Revoke current token."
+        bad "этот сервер сообщение НЕ получил${BOT_NAME:+. Ты писал именно @$BOT_NAME? Если да —} его забрала другая копия бота (старый сервер, компьютер), и она бесплатная"
+        info "надёжнее всего заменить токен ЭТОГО ЖЕ бота: @BotFather → /mybots → бот → API Token → Revoke current token (номер до двоеточия останется прежним)."
         info "Новый токен впиши в $PLATESH_DIR/.env (BOT1_TOKEN=) и $ENV_FILE (BOT_TOKEN=), потом: systemctl restart platesh $SERVICE_NAME"
     fi
 fi
