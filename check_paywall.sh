@@ -55,8 +55,13 @@ else
         fi
     fi
 
-    SINCE="$(systemctl show -p ActiveEnterTimestamp --value "$SERVICE_NAME" 2>/dev/null)"
-    LOG="$(journalctl -u "$SERVICE_NAME" --since "${SINCE:-1 hour ago}" --no-pager 2>/dev/null)"
+    # Журнал именно текущего запуска службы (по его номеру — не зависит от формата даты и часового пояса).
+    INVOCATION="$(systemctl show -p InvocationID --value "$SERVICE_NAME" 2>/dev/null)"
+    if [ -n "$INVOCATION" ]; then
+        LOG="$(journalctl "_SYSTEMD_INVOCATION_ID=$INVOCATION" --no-pager 2>/dev/null)"
+    else
+        LOG="$(journalctl -u "$SERVICE_NAME" -n 500 --no-pager 2>/dev/null)"
+    fi
     STATUS="$(printf '%s\n' "$LOG" | grep -E "Платный доступ|PLATESH_URL не задан" | tail -n 1)"
     case "$STATUS" in
         *"включён"*) ok "в журнале с последнего запуска: платный доступ включён" ;;
