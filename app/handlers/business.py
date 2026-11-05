@@ -359,6 +359,11 @@ async def on_deleted_business_messages(
     event: BusinessMessagesDeleted, bot: Bot, db: Database, config: Config
 ) -> None:
     """Сообщения удалены — присылаем владельцу сохранённые копии."""
+    # Диагностика: видно в journalctl, приходит ли событие удаления от Telegram.
+    logger.info(
+        "deleted_business_messages: conn=%s chat=%s ids=%d",
+        event.business_connection_id, event.chat.id, len(event.message_ids),
+    )
     owner = await _ensure_owner(bot, db, event.business_connection_id)
     if owner is None:
         logger.info("Удаление в неизвестном подключении %s", event.business_connection_id)
