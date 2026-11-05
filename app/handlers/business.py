@@ -282,8 +282,45 @@ async def on_edited_business_message(
             logger.warning("Не удалось отправить уведомление об изменении: %s", exc)
 
 
+# Аккумулятор массовых удалений: за короткое окно копим число удалённых
+# сообщений по чату, чтобы поймать очистку всей переписки, даже если Telegram
+# шлёт её мелкими пачками (по 1–2 id за событие).
+_BULK_WINDOW = 15.0
+_del_acc: dict[tuple[str, int], dict] = {}
+
+
+def _bulk_tracker(
+    connection_id: str, chat_id: int, added: int, threshold: int
+) -> tuple[bool, bool, int]:
+    """Регистрирует удаление `added` сообщений в чате за текущее окно.
+
+    Возвращает (is_bulk, already, total):
+    - is_bulk — впервые достигли порога в окне (пора слать сводку);
+    - already — в этом окне сводку уже слали (поток подавить);
+    - total — сколько удалено за окно.
+    """
+    now = time.monotonic()
+    key = (connection_id, chat_id)
+    acc = _del_acc.get(key)
+    if acc is None or now - acc["start"] > _BULK_WINDOW:
+        acc = {"count": 0, "start": now, "notified": False}
+        _del_acc[key] = acc
+    acc["count"] += added
+    if len(_del_acc) > 5000:  # лёгкая очистка старых ключей
+        for k, v in list(_del_acc.items()):
+            if now - v["start"] > _BULK_WINDOW:
+                del _del_acc[k]
+    if acc["notified"]:
+        return False, True, acc["count"]
+    if acc["count"] >= threshold:
+        acc["notified"] = True
+        return True, False, acc["count"]
+    return False, False, acc["count"]
+
+
 async def _notify_bulk_delete(
-    bot: Bot, db: Database, event: BusinessMessagesDeleted, targets: list[int]
+    bot: Bot, db: Database, event: BusinessMessagesDeleted,
+    targets: list[int], total: int,
 ) -> None:
     """Сводное уведомление о массовом удалении (вся переписка/очистка чата)."""
     # Имя собеседника берём из любой сохранённой входящей копии (первые N id).
@@ -301,14 +338,14 @@ async def _notify_bulk_delete(
         or f"id {event.chat.id}"
     )
     text = (
-        "🧨 <b>Удалена вся переписка</b>\n"
+        "🧨 <b>Удаляется вся переписка</b>\n"
         f"💬 Чат: {esc(chat_name)}\n"
     )
     if sender:
         text += f"👤 Собеседник: {esc(sender)}\n"
     text += (
-        f"Удалено сразу: <b>{len(event.message_ids)}</b> сообщений.\n"
-        "📦 Сохранённые копии на месте — откройте «Экспорт», чтобы их посмотреть."
+        f"Удалено за раз: <b>{total}+</b> сообщений.\n"
+        "📦 Сохранённые копии (если были) на месте — откройте «Экспорт»."
     )
     for chat_id in targets:
         try:
@@ -329,10 +366,16 @@ async def on_deleted_business_messages(
 
     targets = _targets(owner.owner_id, config)
 
-    # Массовое удаление (очистка/удаление всей переписки у обоих) — одно
-    # сводное уведомление вместо потока отдельных.
-    if len(event.message_ids) >= config.bulk_delete_threshold:
-        await _notify_bulk_delete(bot, db, event, targets)
+    # Массовое удаление (очистка/удаление всей переписки у обоих). Считаем
+    # удаления по чату за короткое окно — ловим даже мелкие пачки по 1–2 id.
+    is_bulk, already, total = _bulk_tracker(
+        event.business_connection_id, event.chat.id,
+        len(event.message_ids), config.bulk_delete_threshold,
+    )
+    if already:
+        return  # сводку в этом окне уже отправили — не шумим
+    if is_bulk:
+        await _notify_bulk_delete(bot, db, event, targets, total)
         return
 
     unsaved = 0
