@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import html
 import logging
+import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from aiogram import Bot
-from aiogram.types import Message, User
+from aiogram.types import FSInputFile, Message, User
 
 logger = logging.getLogger(__name__)
 
@@ -71,26 +72,30 @@ async def deliver(
     text: str | None,
     media_type: str | None,
     file_id: str | None,
+    local_path: str | None = None,
 ) -> None:
     """Отправляет владельцу уведомление с сохранённым содержимым.
 
     header уже должен быть в HTML-разметке; text — «сырой» текст сообщения,
-    он экранируется здесь.
+    он экранируется здесь. Если есть локальная копия (local_path) — шлём её
+    с диска, иначе пересылаем по file_id.
     """
     body = header
     if text:
         body += "\n\n" + esc(text)
 
-    if media_type and file_id:
+    use_local = bool(local_path) and os.path.exists(local_path or "")
+    if media_type and (file_id or use_local):
         method_name = SENDERS.get(media_type)
         if method_name is not None:
             sender = getattr(bot, method_name)
+            source = FSInputFile(local_path) if use_local else file_id
             try:
                 if media_type in NO_CAPTION:
-                    await sender(chat_id, file_id)
+                    await sender(chat_id, source)
                     await bot.send_message(chat_id, body[:TEXT_LIMIT])
                 else:
-                    await sender(chat_id, file_id, caption=body[:CAPTION_LIMIT])
+                    await sender(chat_id, source, caption=body[:CAPTION_LIMIT])
                 return
             except Exception as exc:  # file_id может быть непересылаемым
                 logger.warning("Не удалось переслать медиа (%s): %s", media_type, exc)
