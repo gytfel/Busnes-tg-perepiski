@@ -83,11 +83,17 @@ else
         "") info "в журнале с последнего запуска нет строки про платный доступ" ;;
         *) MSG="${STATUS##*| }"; bad "в журнале: ${MSG%.}. Исправь: cd $PROJECT_DIR && bash connect_platesh.sh" ;;
     esac
-    CONFLICTS="$(journalctl -u "$SERVICE_NAME" --since "10 min ago" --no-pager 2>/dev/null | grep -c Conflict)"
-    if [ "${CONFLICTS:-0}" -gt 0 ]; then
-        bad "за 10 минут $CONFLICTS ошибок Conflict: этот же бот работает где-то ещё (старый сервер, компьютер). Там он может быть бесплатным. Останови его там или замени токен в @BotFather"
+    # Только текущий запуск: ошибки до перезапуска не считаем. 1–2 сразу после старта бывают и без второй копии.
+    if [ -n "$INVOCATION" ]; then
+        CONFLICTS="$(journalctl "_SYSTEMD_INVOCATION_ID=$INVOCATION" --since "10 min ago" --no-pager 2>/dev/null | grep -c Conflict)"
     else
-        ok "другой копии бота нет (за 10 минут нет ошибок Conflict)"
+        CONFLICTS="$(journalctl -u "$SERVICE_NAME" --since "10 min ago" --no-pager 2>/dev/null | grep -c Conflict)"
+    fi
+    if [ "${CONFLICTS:-0}" -gt 2 ]; then
+        bad "за 10 минут $CONFLICTS ошибок Conflict: этот же бот с этим же токеном работает где-то ещё (старый сервер, компьютер), и там он может быть бесплатным"
+        info "надёжнее всего заменить токен в @BotFather (/mybots → @${BOT_NAME:-бот} → API Token → Revoke current token) и вписать новый в $ENV_FILE"
+    else
+        ok "другой копии бота нет (за 10 минут ошибок Conflict: ${CONFLICTS:-0})"
     fi
 fi
 
