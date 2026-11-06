@@ -10,6 +10,7 @@ from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
 
 from app.config import Config
 from app.database import Database, StoredMessage
+from app.media_store import forward_media_now, save_media_copy, send_saved_media
 from app.utils import deliver, esc, extract_media, user_title
 
 logger = logging.getLogger(__name__)
@@ -155,11 +156,17 @@ def _forward_origin(message: Message) -> str | None:
     return None
 
 
-async def _store(message: Message, db: Database) -> None:
+async def _store(
+    message: Message, db: Database, bot: Bot, connection_id: str | None = None
+) -> StoredMessage:
     media_type, file_id = extract_media(message)
     chat = message.chat
+    # Скачиваем медиа сразу: одноразовые вложения потом не откроются.
+    media_path = None
+    if media_type and file_id:
+        media_path = await save_media_copy(bot, chat.id, message.message_id, media_type, file_id)
     stored = StoredMessage(
-        connection_id=message.business_connection_id or "",
+        connection_id=connection_id or message.business_connection_id or "",
         chat_id=chat.id,
         message_id=message.message_id,
         from_id=message.from_user.id if message.from_user else None,
@@ -171,8 +178,10 @@ async def _store(message: Message, db: Database) -> None:
         file_id=file_id,
         date=int(message.date.timestamp()) if message.date else 0,
         forward_from=_forward_origin(message),
+        media_path=media_path,
     )
     await db.save_message(stored)
+    return stored
 
 
 def _is_outgoing(message: Message) -> bool:
@@ -205,15 +214,77 @@ async def _ensure_owner(bot: Bot, db: Database, connection_id: str):
     return await db.get_owner(connection_id)
 
 
+async def _notify_media(
+    bot: Bot, config: Config, owner_id: int, stored: StoredMessage, title: str
+) -> None:
+    """Присылает владельцу сохранённое вложение с диска (или по file_id)."""
+    header = (
+        f"{title}\n"
+        f"👤 {esc(stored.from_name)}\n"
+        f"💬 Чат: {esc(stored.chat_title)}\n"
+        f"🕒 {_fmt_date(stored.date)}"
+    )
+    for chat_id in _targets(owner_id, config):
+        try:
+            await deliver(
+                bot=bot,
+                chat_id=chat_id,
+                header=header,
+                text=stored.text,
+                media_type=stored.media_type,
+                file_id=stored.file_id,
+                local_path=stored.media_path,
+            )
+        except Exception as exc:
+            logger.warning("Ошибка отправки вложения владельцу: %s", exc)
+
+
 @router.business_message()
-async def on_business_message(message: Message, bot: Bot, db: Database) -> None:
+async def on_business_message(
+    message: Message, bot: Bot, db: Database, config: Config
+) -> None:
     """Новое сообщение в чате владельца — сохраняем для возможного восстановления."""
     try:
-        await _store(message, db)
+        stored = await _store(message, db, bot)
         # Восстанавливаем запись о подключении, если её нет (после очистки).
-        await _ensure_owner(bot, db, message.business_connection_id or "")
+        owner = await _ensure_owner(bot, db, message.business_connection_id or "")
     except Exception as exc:
         logger.exception("Ошибка сохранения business_message: %s", exc)
+        return
+
+    if owner is None:
+        return
+
+    # Ответ на сообщение с вложением: Telegram присылает исходное сообщение
+    # в reply_to_message. Сохраняем его медиа сейчас, даже если оно одноразовое.
+    rep = message.reply_to_message
+    if rep is not None and extract_media(rep)[0]:
+        try:
+            replied = await _store(
+                rep, db, bot, connection_id=message.business_connection_id or ""
+            )
+            if replied.media_path:
+                logger.info("Сохранено вложение из ответа: chat=%s msg=%s",
+                            replied.chat_id, replied.message_id)
+            else:
+                logger.warning("Вложение из ответа не скачалось: chat=%s msg=%s",
+                               replied.chat_id, replied.message_id)
+            if forward_media_now():
+                await _notify_media(
+                    bot, config, owner.owner_id, replied,
+                    "📎 <b>Сохранено вложение, на которое вы ответили</b>",
+                )
+        except Exception as exc:
+            logger.exception("Ошибка сохранения вложения из ответа: %s", exc)
+
+    # Входящее медиа присылаем владельцу сразу, не дожидаясь удаления.
+    # Свои отправления не дублируем.
+    if stored.outgoing or not stored.media_type or not forward_media_now():
+        return
+    await _notify_media(
+        bot, config, owner.owner_id, stored,
+        "📩 <b>Новое вложение</b> (возможно одноразовое)",
+    )
 
 
 @router.edited_business_message()
@@ -225,7 +296,7 @@ async def on_edited_business_message(
     # edited-апдейты. Тихо обновляем копию, но НЕ спамим уведомлениями.
     if _is_location(message):
         try:
-            await _store(message, db)
+            await _store(message, db, bot)
         except Exception as exc:
             logger.exception("Ошибка обновления геопозиции: %s", exc)
         return
@@ -234,7 +305,7 @@ async def on_edited_business_message(
     owner = await _ensure_owner(bot, db, message.business_connection_id or "")
     # Обновляем сохранённую копию на новую версию.
     try:
-        await _store(message, db)
+        await _store(message, db, bot)
     except Exception as exc:
         logger.exception("Ошибка обновления изменённого сообщения: %s", exc)
 
@@ -358,6 +429,7 @@ async def on_deleted_business_messages(
                     text=stored.text,
                     media_type=stored.media_type,
                     file_id=stored.file_id,
+                    local_path=stored.media_path,
                 )
             except Exception as exc:
                 logger.warning("Ошибка доставки удалённого сообщения: %s", exc)

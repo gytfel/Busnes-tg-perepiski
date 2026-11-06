@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 import aiosqlite
 
+from app.media_store import remove_media_files
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS connections (
     connection_id TEXT PRIMARY KEY,
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS messages (
     media_type    TEXT,
     file_id       TEXT,
     forward_from  TEXT,
+    media_path    TEXT,
     date          INTEGER NOT NULL,
     PRIMARY KEY (chat_id, message_id)
 );
@@ -52,6 +55,7 @@ class StoredMessage:
     file_id: str | None
     date: int
     forward_from: str | None = None
+    media_path: str | None = None  # локальная копия файла на диске
 
 
 @dataclass(slots=True)
@@ -85,6 +89,8 @@ class Database:
         cols = {row["name"] for row in await cur.fetchall()}
         if "forward_from" not in cols:
             await self._db.execute("ALTER TABLE messages ADD COLUMN forward_from TEXT")
+        if "media_path" not in cols:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN media_path TEXT")
 
     async def close(self) -> None:
         if self._db is not None:
@@ -155,12 +161,13 @@ class Database:
                 INSERT INTO messages
                     (connection_id, chat_id, message_id, from_id, from_name,
                      chat_title, outgoing, text, media_type, file_id,
-                     forward_from, date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     forward_from, media_path, date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id, message_id) DO UPDATE SET
                     text         = excluded.text,
                     media_type   = excluded.media_type,
                     file_id      = excluded.file_id,
+                    media_path   = excluded.media_path,
                     from_id      = excluded.from_id,
                     from_name    = excluded.from_name,
                     chat_title   = excluded.chat_title,
@@ -178,6 +185,7 @@ class Database:
                     msg.media_type,
                     msg.file_id,
                     msg.forward_from,
+                    msg.media_path,
                     msg.date,
                 ),
             )
@@ -198,6 +206,7 @@ class Database:
             file_id=row["file_id"],
             date=row["date"],
             forward_from=row["forward_from"],
+            media_path=row["media_path"],
         )
 
     async def get_message(self, chat_id: int, message_id: int) -> StoredMessage | None:
@@ -288,6 +297,16 @@ class Database:
                 (owner_id,),
             )
             count = int((await cur.fetchone())["c"])
+            cur = await self._db.execute(
+                """
+                SELECT media_path FROM messages
+                WHERE connection_id IN (
+                    SELECT connection_id FROM connections WHERE owner_id = ?
+                )
+                """,
+                (owner_id,),
+            )
+            media_paths = [r["media_path"] for r in await cur.fetchall()]
             await self._db.execute(
                 """
                 DELETE FROM messages
@@ -301,6 +320,7 @@ class Database:
             await self._db.execute("VACUUM")
             await self._db.commit()
             size_after = _size()
+        remove_media_files(media_paths)
         return count, max(0, size_before - size_after)
 
     async def wipe_all(self) -> tuple[int, int, int]:
@@ -324,6 +344,8 @@ class Database:
             msg_count = int((await cur.fetchone())["c"])
             cur = await self._db.execute("SELECT COUNT(*) AS c FROM connections")
             conn_count = int((await cur.fetchone())["c"])
+            cur = await self._db.execute("SELECT media_path FROM messages")
+            media_paths = [r["media_path"] for r in await cur.fetchall()]
 
             await self._db.execute("DELETE FROM messages")
             await self._db.execute("DELETE FROM connections")
@@ -334,6 +356,7 @@ class Database:
             await self._db.commit()
             size_after = _size()
 
+        remove_media_files(media_paths)
         freed = max(0, size_before - size_after)
         return msg_count, conn_count, freed
 
