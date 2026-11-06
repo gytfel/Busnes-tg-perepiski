@@ -58,6 +58,19 @@ printf '%s\n' "$PLATESH_LINES" >> "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 chown "$OWNER" "$ENV_FILE"
 
+# Токен — только в .env этого бота: Platesh будет читать его отсюда, свою копию уберёт.
+# Сменишь токен в @BotFather — поменяешь его в одном месте.
+RESTART_PLATESH=0
+if TOKEN_OUT="$(cd "$PLATESH_DIR" && .venv/bin/python -m platesh token-from "$ENV_FILE" -c config.yaml 2>&1)"; then
+    printf '%s\n' "$TOKEN_OUT"
+    case "$TOKEN_OUT" in "✅"*) RESTART_PLATESH=1 ;; esac
+elif printf '%s' "$TOKEN_OUT" | grep -q "invalid choice"; then
+    echo "   Platesh старой версии хранит свою копию токена. Чтобы токен был в одном месте, обнови его:"
+    echo "   cd $PLATESH_DIR && ./run.sh update — и запусти этот скрипт ещё раз."
+else
+    echo "   ⚠️ Токен остался и в Platesh: ${TOKEN_OUT#Ошибка: }"
+fi
+
 if [ "${SKIP_RESTART:-}" = "1" ]; then
     say "Готово (бот не перезапускался)."
     exit 0
@@ -84,6 +97,9 @@ fi
 say "Перезапускаю бота (на слабом сервере это может занять пару минут)…"
 SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
 systemctl daemon-reload
+if [ "$RESTART_PLATESH" = "1" ]; then
+    systemctl restart platesh  # перечитать config.yaml: токен теперь берётся из .env бота
+fi
 systemctl restart "$SERVICE_NAME"
 # Ждём, пока бот загрузится и напишет в журнал, включилась ли оплата.
 for _ in $(seq 1 60); do

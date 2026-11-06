@@ -140,7 +140,11 @@ if [ -n "$USER_ID" ] && [ -r /dev/tty ] && [ "${SKIP_LIVE:-}" != "1" ]; then
     else
         bad "этот сервер сообщение НЕ получил${BOT_NAME:+. Ты писал именно @$BOT_NAME? Если да —} его забрала другая копия бота (старый сервер, компьютер), и она бесплатная"
         info "надёжнее всего заменить токен ЭТОГО ЖЕ бота: @BotFather → /mybots → бот → API Token → Revoke current token (номер до двоеточия останется прежним)."
-        info "Новый токен впиши в $PLATESH_DIR/.env (BOT1_TOKEN=) и $ENV_FILE (BOT_TOKEN=), потом: systemctl restart platesh $SERVICE_NAME"
+        if grep -qE '^BOT[0-9]+_TOKEN=' "$PLATESH_DIR/.env" 2>/dev/null; then
+            info "Новый токен впиши в $ENV_FILE (BOT_TOKEN=) и в $PLATESH_DIR/.env (BOT1_TOKEN=), потом: bash $PROJECT_DIR/connect_platesh.sh"
+        else
+            info "Новый токен впиши только в $ENV_FILE (BOT_TOKEN=) — Platesh берёт его оттуда. Потом: systemctl restart platesh $SERVICE_NAME"
+        fi
     fi
 fi
 
