@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import logging
 import os
 import tempfile
@@ -206,8 +207,15 @@ async def _embed_one(
         stats.skipped_size += 1
         return att(" — не вошло по размеру")
 
+    # Предпочитаем локальную копию: её можно прочитать, даже если Telegram
+    # уже не отдаёт файл по file_id (например, после удаления переписки).
+    local = getattr(m, "media_path", None)
     try:
-        buf, file_path = await _download(bot, m.file_id)
+        if local and os.path.exists(local):
+            with open(local, "rb") as fh:
+                buf, file_path = io.BytesIO(fh.read()), local
+        else:
+            buf, file_path = await _download(bot, m.file_id)
     except Exception as exc:
         text = str(exc).lower()
         if "too big" in text or "file is too big" in text:

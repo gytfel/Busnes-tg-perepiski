@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 import time
 from datetime import datetime, timezone
 
 from aiogram import Bot, Router
-from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
+from aiogram.types import BusinessConnection, BusinessMessagesDeleted, FSInputFile, Message
 
 from app.config import Config
 from app.database import Database, StoredMessage
-from app.media_store import forward_media_now, save_media_copy, send_saved_media
+from app.export import build_export
+from app.media_store import forward_media_now, save_media_copy
 from app.utils import deliver, esc, extract_media, user_title
 
 logger = logging.getLogger(__name__)
@@ -355,8 +358,48 @@ async def on_edited_business_message(
             logger.warning("Не удалось отправить уведомление об изменении: %s", exc)
 
 
+async def _send_chat_export(
+    bot: Bot, db: Database, config: Config, chat_id: int, chat_name: str,
+    targets: list[int],
+) -> None:
+    """Присылает HTML-файл со всей сохранённой перепиской этого чата.
+
+    Вызывается при массовом удалении, пока копии ещё есть в базе.
+    """
+    messages = await db.chat_messages(chat_id)
+    if not messages:
+        return
+    budget = config.export_media_mb * 1024 * 1024
+    path = None
+    try:
+        path, stats = await build_export(bot, messages, budget)
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M")
+        safe_name = re.sub(r"[^\w.-]+", "_", chat_name)[:40].strip("_") or "chat"
+        caption = (
+            f"📦 Переписка с «{chat_name}»: {len(messages)} сообщений, "
+            f"встроено медиа: {stats.embedded}."
+        )
+        if stats.notes:
+            caption += "\n\n⚠️ " + " ".join(stats.notes)
+        for chat_target in targets:
+            try:
+                document = FSInputFile(path, filename=f"perepiska_{safe_name}_{stamp}.html")
+                await bot.send_document(chat_target, document, caption=caption[:1024])
+            except Exception as exc:
+                logger.warning("Не удалось отправить экспорт чата: %s", exc)
+    except Exception as exc:
+        logger.exception("Ошибка сборки экспорта чата %s: %s", chat_id, exc)
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 async def _notify_bulk_delete(
-    bot: Bot, db: Database, event: BusinessMessagesDeleted, targets: list[int]
+    bot: Bot, db: Database, config: Config, event: BusinessMessagesDeleted,
+    targets: list[int],
 ) -> None:
     """Сводное уведомление о массовом удалении (вся переписка/очистка чата)."""
     # Имя собеседника берём из любой сохранённой входящей копии (первые N id).
@@ -376,13 +419,15 @@ async def _notify_bulk_delete(
         text += f"👤 Собеседник: {esc(sender)}\n"
     text += (
         f"Удалено сразу: <b>{len(event.message_ids)}</b> сообщений.\n"
-        "📦 Сохранённые копии на месте — откройте «Экспорт», чтобы их посмотреть."
+        "📎 Ниже файл со всей сохранённой перепиской этого чата."
     )
     for chat_id in targets:
         try:
             await bot.send_message(chat_id, text)
         except Exception as exc:
             logger.warning("Ошибка уведомления о массовом удалении: %s", exc)
+
+    await _send_chat_export(bot, db, config, event.chat.id, chat_name, targets)
 
 
 @router.deleted_business_messages()
@@ -405,7 +450,7 @@ async def on_deleted_business_messages(
     # Массовое удаление (очистка/удаление всей переписки у обоих) — одно
     # сводное уведомление вместо потока отдельных.
     if len(event.message_ids) >= config.bulk_delete_threshold:
-        await _notify_bulk_delete(bot, db, event, targets)
+        await _notify_bulk_delete(bot, db, config, event, targets)
         return
 
     for message_id in event.message_ids:

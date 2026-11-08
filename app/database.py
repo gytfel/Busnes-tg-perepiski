@@ -242,6 +242,17 @@ class Database:
             rows = await cur.fetchall()
         return [self._row_to_message(r) for r in rows]
 
+    async def chat_messages(self, chat_id: int) -> list[StoredMessage]:
+        """Все сохранённые сообщения одного чата (для экспорта при массовом удалении)."""
+        assert self._db is not None
+        async with self._lock:
+            cur = await self._db.execute(
+                "SELECT * FROM messages WHERE chat_id = ? ORDER BY date, message_id",
+                (chat_id,),
+            )
+            rows = await cur.fetchall()
+        return [self._row_to_message(r) for r in rows]
+
     async def all_messages(self, owner_id: int) -> list[StoredMessage]:
         """Все сохранённые сообщения владельца для экспорта (по чату, затем по времени)."""
         assert self._db is not None
