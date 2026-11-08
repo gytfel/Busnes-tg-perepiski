@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import aiosqlite
 
-from app.media_store import remove_media_files
+from app.media_store import remove_media_files, sweep_media_dir
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS connections (
@@ -368,6 +368,8 @@ class Database:
             size_after = _size()
 
         remove_media_files(media_paths)
+        # Заодно убираем осиротевшие копии (например, после замены медиа при правке).
+        sweep_media_dir()
         freed = max(0, size_before - size_after)
         return msg_count, conn_count, freed
 

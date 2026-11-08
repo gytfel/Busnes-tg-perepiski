@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 
 from aiogram import Bot
 from aiogram.types import FSInputFile
@@ -48,6 +49,29 @@ async def save_media_copy(
     except Exception as exc:  # файл может быть больше 20 МБ или уже недоступен
         logger.warning("Не удалось сохранить копию медиа (%s): %s", media_type, exc)
         return None
+
+
+_MEDIA_NAME = re.compile(r"^-?\d+_\d+_[0-9a-f]{16}(\.[A-Za-z0-9]+)?$")
+
+
+def sweep_media_dir() -> int:
+    """Удаляет все файлы копий в папке медиа (при полной очистке).
+
+    Трогает только файлы с именами нашего формата (chat_msg_hash.ext),
+    чтобы не удалить чужие файлы, если папка общая.
+    """
+    folder = media_dir()
+    if not os.path.isdir(folder):
+        return 0
+    removed = 0
+    for name in os.listdir(folder):
+        if _MEDIA_NAME.match(name):
+            try:
+                os.remove(os.path.join(folder, name))
+                removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 def remove_media_files(paths: list[str]) -> int:
