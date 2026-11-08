@@ -68,15 +68,6 @@ def _targets(owner_id: int, config: Config) -> list[int]:
     return targets
 
 
-def _diag(tag: str, obj) -> None:
-    """ВРЕМЕННАЯ диагностика: пишет в лог, что реально пришло от Telegram."""
-    try:
-        raw = obj.model_dump_json(exclude_none=True)
-    except Exception:
-        raw = repr(obj)
-    logger.info("DIAG %s: %s", tag, raw[:3000])
-
-
 def _fmt_date(ts: int) -> str:
     try:
         return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC")
@@ -268,7 +259,6 @@ async def on_business_message(
     message: Message, bot: Bot, db: Database, config: Config
 ) -> None:
     """Новое сообщение в чате владельца — сохраняем для возможного восстановления."""
-    _diag("business_message", message)
     try:
         stored = await _store(message, db, bot)
         # Восстанавливаем запись о подключении, если её нет (после очистки).
@@ -321,7 +311,6 @@ async def on_edited_business_message(
     message: Message, bot: Bot, db: Database, config: Config
 ) -> None:
     """Сообщение изменено — показываем владельцу старую и новую версии."""
-    _diag("edited_business_message", message)
     # Трансляция геопозиции обновляется каждые несколько секунд через
     # edited-апдейты. Тихо обновляем копию, но НЕ спамим уведомлениями.
     if _is_location(message):
@@ -451,7 +440,6 @@ async def on_deleted_business_messages(
     event: BusinessMessagesDeleted, bot: Bot, db: Database, config: Config
 ) -> None:
     """Удаление сообщений: копим пачки одного чата на короткое окно, затем разбираем."""
-    _diag("deleted_business_messages", event)
     key = (event.business_connection_id, event.chat.id)
     entry = _pending_deletes.get(key)
     if entry is None:
@@ -481,11 +469,6 @@ async def _process_deletes(
     event: BusinessMessagesDeleted, bot: Bot, db: Database, config: Config
 ) -> None:
     """Присылает владельцу сохранённые копии удалённых сообщений (или сводку)."""
-    logger.info("DIAG deleted batch: chat=%s count=%s", event.chat.id, len(event.message_ids))
-    for mid in event.message_ids:
-        s = await db.get_message(event.chat.id, mid)
-        logger.info("DIAG deleted msg_id=%s stored=%s media_type=%s media_path=%s",
-                    mid, bool(s), s.media_type if s else None, s.media_path if s else None)
     owner = await _ensure_owner(bot, db, event.business_connection_id)
     if owner is None:
         logger.info("Удаление в неизвестном подключении %s", event.business_connection_id)
