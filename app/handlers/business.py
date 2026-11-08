@@ -33,8 +33,8 @@ _DELETE_WINDOW = 3.0
 _pending_deletes: dict[tuple[str, int], dict] = {}
 _background_tasks: set[asyncio.Task] = set()
 
-# Стикеры и голосовые сохраняем, но не присылаем как «возможно одноразовое».
-_NO_IMMEDIATE_NOTIFY = {"sticker", "voice"}
+# Стикеры, голосовые и кружки сохраняем, но не присылаем как «возможно одноразовое».
+_NO_IMMEDIATE_NOTIFY = {"sticker", "voice", "video_note"}
 
 
 def _edit_too_frequent(chat_id: int, message_id: int) -> bool:
