@@ -82,7 +82,8 @@ def build_dispatcher(db: Database, config: Config, platesh: PlateshClient | None
         platesh.install_paywall(
             dp,
             products=config.platesh_products or None,
-            allow_commands=("paysupport", "terms", "help"),
+            # /help не пропускаем: он показывает всё меню бота — без подписки это выглядит как открытый доступ.
+            allow_commands=("paysupport", "terms"),
             exempt_users=[config.owner_id] if config.owner_id else (),
             text=PAYWALL_TEXT,
             business_text=BUSINESS_PAYWALL_TEXT,
