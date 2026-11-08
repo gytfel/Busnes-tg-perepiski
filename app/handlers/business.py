@@ -283,8 +283,10 @@ async def on_business_message(
     # Ответ на сообщение с вложением: Telegram присылает исходное сообщение
     # в reply_to_message. Сохраняем его медиа сейчас, даже если оно одноразовое.
     rep = message.reply_to_message
-    if rep is not None and extract_media(rep)[0] not in (None, *_NO_IMMEDIATE_NOTIFY):
+    rep_media = extract_media(rep)[0] if rep is not None else None
+    if rep_media:
         try:
+            # Копию сохраняем всегда; список исключений влияет только на уведомление.
             replied = await _store(
                 rep, db, bot, connection_id=message.business_connection_id or ""
             )
@@ -294,7 +296,7 @@ async def on_business_message(
             else:
                 logger.warning("Вложение из ответа не скачалось: chat=%s msg=%s",
                                replied.chat_id, replied.message_id)
-            if forward_media_now():
+            if forward_media_now() and rep_media not in _NO_IMMEDIATE_NOTIFY:
                 await _notify_media(
                     bot, config, owner.owner_id, replied,
                     "📎 <b>Сохранено вложение, на которое вы ответили</b>",
