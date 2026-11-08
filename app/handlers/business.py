@@ -1,6 +1,7 @@
 """Обработчики Telegram Business: подключение, новые/изменённые/удалённые сообщения."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -24,6 +25,16 @@ router = Router(name="business")
 # владельца. Копим КАЖДУЮ версию в БД как и раньше — глушим только уведомления.
 _EDIT_NOTIFY_WINDOW = 5.0
 _last_edit_notify: dict[tuple[int, int], float] = {}
+
+# Удаления одного чата, пришедшие в течение окна, разбираем как одно событие:
+# Telegram может присылать «удалить всё» несколькими пачками, и каждая пачка
+# по отдельности не набирает порог массового удаления.
+_DELETE_WINDOW = 3.0
+_pending_deletes: dict[tuple[str, int], dict] = {}
+_background_tasks: set[asyncio.Task] = set()
+
+# Стикеры сохраняем, но не присылаем как «возможно одноразовое».
+_NO_IMMEDIATE_NOTIFY = {"sticker"}
 
 
 def _edit_too_frequent(chat_id: int, message_id: int) -> bool:
@@ -271,7 +282,7 @@ async def on_business_message(
     # Ответ на сообщение с вложением: Telegram присылает исходное сообщение
     # в reply_to_message. Сохраняем его медиа сейчас, даже если оно одноразовое.
     rep = message.reply_to_message
-    if rep is not None and extract_media(rep)[0]:
+    if rep is not None and extract_media(rep)[0] not in (None, *_NO_IMMEDIATE_NOTIFY):
         try:
             replied = await _store(
                 rep, db, bot, connection_id=message.business_connection_id or ""
@@ -293,6 +304,8 @@ async def on_business_message(
     # Входящее медиа присылаем владельцу сразу, не дожидаясь удаления.
     # Свои отправления не дублируем.
     if stored.outgoing or not stored.media_type or not forward_media_now():
+        return
+    if stored.media_type in _NO_IMMEDIATE_NOTIFY:
         return
     await _notify_media(
         bot, config, owner.owner_id, stored,
@@ -434,8 +447,38 @@ async def _notify_bulk_delete(
 async def on_deleted_business_messages(
     event: BusinessMessagesDeleted, bot: Bot, db: Database, config: Config
 ) -> None:
-    """Сообщения удалены — присылаем владельцу сохранённые копии."""
+    """Удаление сообщений: копим пачки одного чата на короткое окно, затем разбираем."""
     _diag("deleted_business_messages", event)
+    key = (event.business_connection_id, event.chat.id)
+    entry = _pending_deletes.get(key)
+    if entry is None:
+        entry = {"ids": [], "chat": event.chat}
+        _pending_deletes[key] = entry
+        task = asyncio.create_task(_flush_deletes(key, bot, db, config))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+    entry["ids"].extend(event.message_ids)
+
+
+async def _flush_deletes(key: tuple[str, int], bot: Bot, db: Database, config: Config) -> None:
+    await asyncio.sleep(_DELETE_WINDOW)
+    entry = _pending_deletes.pop(key, None)
+    if entry is None:
+        return
+    combined = BusinessMessagesDeleted(
+        business_connection_id=key[0], chat=entry["chat"], message_ids=entry["ids"],
+    )
+    try:
+        await _process_deletes(combined, bot, db, config)
+    except Exception:
+        logger.exception("Ошибка обработки удаления в чате %s", key[1])
+
+
+async def _process_deletes(
+    event: BusinessMessagesDeleted, bot: Bot, db: Database, config: Config
+) -> None:
+    """Присылает владельцу сохранённые копии удалённых сообщений (или сводку)."""
+    logger.info("DIAG deleted batch: chat=%s count=%s", event.chat.id, len(event.message_ids))
     for mid in event.message_ids:
         s = await db.get_message(event.chat.id, mid)
         logger.info("DIAG deleted msg_id=%s stored=%s media_type=%s media_path=%s",
